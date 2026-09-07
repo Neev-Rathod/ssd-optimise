@@ -321,52 +321,68 @@ class App(tk.Tk):
         frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=4, pady=(0, 6))
         frame.columnconfigure(0, weight=1)
 
-        tk.Label(frame, text="Live Hardware Paths", font=FONT_HEAD,
-                 fg=FG, bg=BG2).grid(row=0, column=0, sticky="w", padx=12, pady=(8, 2))
-        self._guide_var = tk.StringVar(
-            value="Press Next Step to inspect the data flow, or run the benchmark for live activity.")
-        tk.Label(frame, textvariable=self._guide_var, font=FONT_LABEL,
-             fg=FG2, bg=BG2).grid(row=0, column=0, sticky="e", padx=12, pady=(8, 2))
+        # Header area with Title & Real-Time Training Execution Details
+        hdr_frame = tk.Frame(frame, bg=BG2)
+        hdr_frame.pack(fill="x", padx=12, pady=(8, 4))
 
-        lanes = {
-            "normal": ("NORMAL / STANDARD I/O", ACCENT_RED,
-                       [("app", "MODEL / APP", "Request"), ("cpu", "CPU", "Compute"),
-                        ("ram", "RAM", "KV-cache"), ("page", "OS PAGE CACHE", "Copy buffer"),
-                        ("ssd", "SSD STORAGE", "4 KB reads")]),
-            "ai": ("AI-SSD OPTIMISED I/O", ACCENT_BLUE,
-                   [("app", "MODEL / APP", "Request"), ("cpu", "CPU", "Compute"),
-                    ("ram", "RAM", "KV-cache"), ("prefetch", "PREFETCH ENGINE", "Next block"),
-                    ("page", "OS PAGE CACHE", "Warm pages"), ("ssd", "SSD STORAGE", "mmap reads")]),
+        tk.Label(hdr_frame, text="Live Hardware Canvas & Model Training Pipeline", font=FONT_HEAD,
+                 fg=FG, bg=BG2).pack(side="left")
+
+        self._guide_var = tk.StringVar(
+            value="Press 'Next Step' to inspect data flow mechanics, or click 'Run Benchmark' for live execution.")
+        tk.Label(hdr_frame, textvariable=self._guide_var, font=FONT_LABEL,
+                 fg=FG2, bg=BG2).pack(side="right")
+
+        # Live Canvas widget
+        self._canvas_w = 1160
+        self._canvas_h = 250
+        self._canvas = tk.Canvas(frame, bg="#131520", height=self._canvas_h,
+                                 highlightthickness=1, highlightbackground=BORDER)
+        self._canvas.pack(fill="x", padx=8, pady=(0, 8))
+
+        # Training metric bar below canvas
+        self._train_bar = tk.Frame(frame, bg=BG3, highlightbackground=BORDER, highlightthickness=1, pady=4)
+        self._train_bar.pack(fill="x", padx=8, pady=(0, 8))
+
+        self._batch_var = tk.StringVar(value="Batch: Standby (0/20)")
+        self._loss_var = tk.StringVar(value="Loss: --")
+        self._io_wait_var = tk.StringVar(value="I/O Wait: -- ms")
+        self._comp_var = tk.StringVar(value="Compute: -- ms")
+        self._mode_desc_var = tk.StringVar(value="Pipeline Status: Waiting to initialize model training simulation...")
+
+        tk.Label(self._train_bar, textvariable=self._batch_var, font=("Segoe UI", 9, "bold"), fg=ACCENT_BLUE, bg=BG3).pack(side="left", padx=12)
+        tk.Label(self._train_bar, text="|", fg=FG2, bg=BG3).pack(side="left", padx=4)
+        tk.Label(self._train_bar, textvariable=self._loss_var, font=("Segoe UI", 9, "bold"), fg=ACCENT_GRN, bg=BG3).pack(side="left", padx=12)
+        tk.Label(self._train_bar, text="|", fg=FG2, bg=BG3).pack(side="left", padx=4)
+        tk.Label(self._train_bar, textvariable=self._io_wait_var, font=("Segoe UI", 9), fg=ACCENT_RED, bg=BG3).pack(side="left", padx=12)
+        tk.Label(self._train_bar, text="|", fg=FG2, bg=BG3).pack(side="left", padx=4)
+        tk.Label(self._train_bar, textvariable=self._comp_var, font=("Segoe UI", 9), fg=ACCENT_BLUE, bg=BG3).pack(side="left", padx=12)
+        tk.Label(self._train_bar, textvariable=self._mode_desc_var, font=("Segoe UI", 8, "italic"), fg=FG2, bg=BG3).pack(side="right", padx=12)
+
+        # Topology layout nodes definitions
+        self._nodes_def = {
+            "normal": [
+                ("ssd",      "SSD STORAGE",    "NVMe Flash / 4KB Reads",    75,  65),
+                ("page",     "OS PAGE CACHE",  "Kernel Copy Buffer",        290, 65),
+                ("ram",      "SYSTEM RAM",     "User-space Buffer",         505, 65),
+                ("cpu",      "CPU / GPU",      "Token Compute (Stalled)",   720, 65),
+                ("app",      "MODEL / APP",    "Batch Execution",           935, 65),
+            ],
+            "ai": [
+                ("ssd",      "SSD STORAGE",    "NVMe Direct / mmap",        75,  185),
+                ("prefetch", "PREFETCH ENGINE","Async Lookahead Worker",    290, 185),
+                ("ram",      "ZERO-COPY RAM",  "Direct Memory View",        505, 185),
+                ("cpu",      "CPU / GPU",      "Overlapped Compute",        720, 185),
+                ("app",      "MODEL / APP",    "High-Throughput Batch",     935, 185),
+            ]
         }
-        for row, (lane_key, (lane_title, lane_colour, hardware)) in enumerate(lanes.items(), start=1):
-            tk.Label(frame, text=lane_title, font=("Segoe UI", 9, "bold"),
-                     fg=lane_colour, bg=BG2).grid(row=row, column=0, sticky="w", padx=12, pady=(3, 0))
-            path = tk.Frame(frame, bg=BG2)
-            path.grid(row=row, column=0, sticky="ew", padx=8, pady=(0, 5))
-            self._hardware_vars[lane_key] = {}
-            for index, (key, title, detail) in enumerate(hardware):
-                path.columnconfigure(index * 2, weight=1)
-                card = tk.Frame(path, bg=BG3, highlightbackground=BORDER,
-                                highlightthickness=1, padx=8, pady=4)
-                card.grid(row=0, column=index * 2, sticky="ew")
-                title_label = tk.Label(card, text=title, font=("Segoe UI", 8, "bold"),
-                                       fg=FG, bg=BG3)
-                title_label.pack()
-                detail_label = tk.Label(card, text=detail, font=("Segoe UI", 8),
-                                        fg=FG2, bg=BG3)
-                detail_label.pack()
-                status = tk.Label(card, text="Waiting", font=FONT_LABEL,
-                                  fg=FG2, bg=BG3)
-                status.pack(pady=(1, 0))
-                pulse = tk.Frame(card, height=3, bg=BORDER)
-                pulse.pack(fill="x", pady=(2, 0))
-                self._hardware_vars[lane_key][key] = {
-                    "card": card, "status": status, "pulse": pulse,
-                    "colour": lane_colour, "labels": (title_label, detail_label),
-                }
-                if index < len(hardware) - 1:
-                    tk.Label(path, text=">", font=("Segoe UI", 14, "bold"),
-                             fg=FG2, bg=BG2).grid(row=0, column=index * 2 + 1, padx=4)
+
+        self._active_nodes = {"normal": set(), "ai": set()}
+        self._packets = []
+        self._animating = False
+
+        self._redraw_canvas()
+        self._start_packet_animation()
 
     def _build_log_panel(self, parent: tk.Widget) -> None:
         frame = _make_frame(parent, bg=BG2)
@@ -499,6 +515,123 @@ class App(tk.Tk):
     # Benchmark control
     # -----------------------------------------------------------------------
 
+    # -----------------------------------------------------------------------
+    # Canvas visualizer & animation methods
+    # -----------------------------------------------------------------------
+
+    def _redraw_canvas(self) -> None:
+        self._canvas.delete("all")
+
+        # Draw lane titles on canvas
+        self._canvas.create_text(20, 20, text="NORMAL / STANDARD I/O  (Synchronous Page Cache Buffer & CPU Stall Path)",
+                                 font=("Segoe UI", 9, "bold"), fill=ACCENT_RED, anchor="w")
+
+        self._canvas.create_text(20, 140, text="AI-SSD OPTIMISED I/O  (Zero-Copy mmap & Async Lookahead Prefetch Path)",
+                                 font=("Segoe UI", 9, "bold"), fill=ACCENT_BLUE, anchor="w")
+
+        # Draw lane divider line
+        self._canvas.create_line(15, 122, self._canvas_w - 15, 122, fill=BORDER, dash=(4, 4))
+
+        # Draw connections and nodes for both lanes
+        for lane in ("normal", "ai"):
+            nodes = self._nodes_def[lane]
+            lane_color = ACCENT_RED if lane == "normal" else ACCENT_BLUE
+
+            # Draw vector connections between consecutive nodes
+            for i in range(len(nodes) - 1):
+                key1, t1, d1, x1, y1 = nodes[i]
+                key2, t2, d2, x2, y2 = nodes[i+1]
+
+                start_x = x1 + 65
+                end_x = x2 - 65
+                line_y = y1
+
+                is_active = (key1 in self._active_nodes.get(lane, set())) and (key2 in self._active_nodes.get(lane, set()))
+                col = lane_color if is_active else "#282d44"
+                lw = 3 if is_active else 2
+
+                self._canvas.create_line(start_x, line_y, end_x, line_y, fill=col, width=lw,
+                                         arrow="last", arrowshape=(8, 10, 4))
+
+            # Draw node boxes
+            for key, title, detail, cx, cy in nodes:
+                is_active = key in self._active_nodes.get(lane, set())
+                border_color = lane_color if is_active else BORDER
+                bg_color = "#1f243b" if is_active else "#161928"
+                title_color = "white" if is_active else FG
+                detail_color = lane_color if is_active else FG2
+
+                w, h = 130, 48
+                x1, y1 = cx - w//2, cy - h//2
+                x2, y2 = cx + w//2, cy + h//2
+
+                # Node rectangle
+                self._canvas.create_rectangle(x1, y1, x2, y2, fill=bg_color,
+                                              outline=border_color, width=2 if is_active else 1)
+
+                # Active status tag indicator on node
+                if is_active:
+                    self._canvas.create_rectangle(x1, y1, x1+6, y2, fill=border_color, outline="")
+
+                # Node Labels
+                self._canvas.create_text(cx, cy - 8, text=title, font=("Segoe UI", 8, "bold"),
+                                         fill=title_color)
+                self._canvas.create_text(cx, cy + 10, text=detail, font=("Segoe UI", 7),
+                                         fill=detail_color)
+
+    def _start_packet_animation(self) -> None:
+        self._animate_packets()
+
+    def _animate_packets(self) -> None:
+        self._canvas.delete("packet")
+
+        # Spawn packets along active paths
+        for lane in ("normal", "ai"):
+            nodes = self._nodes_def[lane]
+            active_set = self._active_nodes.get(lane, set())
+            if active_set:
+                if len([p for p in self._packets if p["lane"] == lane]) < 4:
+                    self._packets.append({
+                        "lane": lane,
+                        "seg": 0,
+                        "prog": 0.0,
+                        "speed": 0.09 if lane == "ai" else 0.04
+                    })
+
+        new_packets = []
+        for p in self._packets:
+            lane = p["lane"]
+            nodes = self._nodes_def[lane]
+            seg = p["seg"]
+            p["prog"] += p["speed"]
+
+            if seg < len(nodes) - 1:
+                key1, _, _, x1, y1 = nodes[seg]
+                key2, _, _, x2, y2 = nodes[seg+1]
+
+                start_x, end_x = x1 + 65, x2 - 65
+                px = start_x + (end_x - start_x) * p["prog"]
+                py = y1
+
+                color = ACCENT_RED if lane == "normal" else ACCENT_BLUE
+                r = 4
+                self._canvas.create_oval(px - r, py - r, px + r, py + r,
+                                         fill=color, outline="white", width=1, tags="packet")
+
+                if p["prog"] >= 1.0:
+                    p["prog"] = 0.0
+                    p["seg"] += 1
+
+                if p["seg"] < len(nodes) - 1:
+                    new_packets.append(p)
+
+        self._packets = new_packets
+        self.after(40, self._animate_packets)
+
+    # -----------------------------------------------------------------------
+    # Benchmark control & Worker execution
+    # -----------------------------------------------------------------------
+
     def _start_benchmark(self) -> None:
         if self._running:
             return
@@ -539,22 +672,26 @@ class App(tk.Tk):
             self._q.put(("phase_done", "load_o",
                          f"{elapsed_o*1000:.0f} ms  |  {tp_o:.0f} MB/s"))
 
-            # ---- Phase 2A: baseline KV-cache -----------------------------
+            # ---- Phase 2A: baseline KV-cache / model step -----------------
             self._q.put(("phase_start", "kv_b"))
             std_reader.clear_cache()
             gc.collect()
             baseline_kv = emu.BaselineKVCache(std_reader)
-            kv_lats_b, kv_ram_b, kv_hit_b = baseline_kv.run_inference()
+            kv_lats_b, kv_ram_b, kv_hit_b = baseline_kv.run_inference(
+                step_callback=lambda data: self._q.put(("step_update", data))
+            )
             avg_b = float(np.mean(kv_lats_b))
             self._q.put(("phase_done", "kv_b",
                          f"{avg_b:.1f} ms/step  |  {kv_hit_b:.0f}% hit"))
 
-            # ---- Phase 2B: optimised KV-cache ----------------------------
+            # ---- Phase 2B: optimised KV-cache / model step ----------------
             self._q.put(("phase_start", "kv_o"))
             gc.collect()
             with emu.AISSDReader(dataset_path) as opt_reader:
                 opt_kv = emu.OptimisedKVCache(opt_reader)
-                kv_lats_o, kv_ram_o, kv_hit_o = opt_kv.run_inference()
+                kv_lats_o, kv_ram_o, kv_hit_o = opt_kv.run_inference(
+                    step_callback=lambda data: self._q.put(("step_update", data))
+                )
             avg_o = float(np.mean(kv_lats_o))
             self._q.put(("phase_done", "kv_o",
                          f"{avg_o:.1f} ms/step  |  {kv_hit_o:.0f}% hit"))
@@ -626,6 +763,34 @@ class App(tk.Tk):
             self._phase_set_done(pid, metric)
             self._hardware_set_done(pid)
 
+        elif kind == "step_update":
+            data = event[1]
+            mode = data["mode"]
+            step = data["step"]
+            total = data["total"]
+            lat = data["lat_ms"]
+            io_ms = data["io_ms"]
+            comp_ms = data["compute_ms"]
+            loss = data["loss"]
+            batch = data["batch"]
+            active_nodes = data["active_nodes"]
+
+            self._batch_var.set(f"Batch: {batch}/{total} ({(batch/total)*100:.0f}%)")
+            self._loss_var.set(f"Loss: {loss:.4f}")
+            self._io_wait_var.set(f"I/O Wait: {io_ms:.1f} ms")
+            self._comp_var.set(f"Compute: {comp_ms:.1f} ms")
+
+            if mode == "baseline":
+                self._mode_desc_var.set(
+                    f"STANDARD I/O: Batch {batch}/{total} - CPU Stalled ({io_ms:.1f}ms I/O read wait vs {comp_ms:.1f}ms compute)"
+                )
+                self._set_hardware_activity({"normal": set(active_nodes), "ai": set()})
+            else:
+                self._mode_desc_var.set(
+                    f"AI-SSD OPTIMISED: Batch {batch}/{total} - Async Prefetch active (0ms stall, {comp_ms:.1f}ms compute)"
+                )
+                self._set_hardware_activity({"normal": set(), "ai": set(active_nodes)})
+
         elif kind == "results":
             baseline, optimised = event[1], event[2]
             self._baseline  = baseline
@@ -689,63 +854,70 @@ class App(tk.Tk):
         active = {
             "gen": {"normal": {"app", "ssd"}, "ai": {"app", "ssd"}},
             "load_b": {"normal": {"app", "cpu", "ram", "page", "ssd"}, "ai": set()},
-            "load_o": {"normal": set(), "ai": {"app", "ram", "page", "ssd", "prefetch"}},
+            "load_o": {"normal": set(), "ai": {"app", "ram", "cpu", "ssd", "prefetch"}},
             "kv_b": {"normal": {"app", "cpu", "ram", "page", "ssd"}, "ai": set()},
-            "kv_o": {"normal": set(), "ai": {"app", "cpu", "ram", "page", "ssd", "prefetch"}},
+            "kv_o": {"normal": set(), "ai": {"app", "cpu", "ram", "ssd", "prefetch"}},
         }.get(pid, {})
         self._set_hardware_activity(active, "ACTIVE")
         explanations = {
-            "gen": "Both lanes use the SSD to create or verify the model checkpoint.",
-            "load_b": "Normal I/O copies many small chunks from SSD through the OS into RAM.",
-            "load_o": "AI-SSD maps the file and prefetches the next pages before they are requested.",
-            "kv_b": "Normal inference waits for each KV block before CPU computation continues.",
-            "kv_o": "AI-SSD inference computes while the prefetch engine prepares the next KV block.",
+            "gen": "Phase 0: Both pipelines create and verify dataset checkpoint on SSD.",
+            "load_b": "Phase 1A: Baseline dataset read - chunked open()/read() into OS Page Cache.",
+            "load_o": "Phase 1B: AI-SSD dataset read - mmap zero-copy memory views with prefetch hints.",
+            "kv_b": "Phase 2A: Baseline inference/training - synchronous disk reads stall CPU step compute.",
+            "kv_o": "Phase 2B: AI-SSD inference/training - async lookahead worker prefetches next block.",
         }
         if self._guide_var is not None:
-            self._guide_var.set(explanations.get(pid, "Benchmark activity is visible in both hardware lanes."))
+            self._guide_var.set(explanations.get(pid, "Benchmark activity active on Canvas visualizer."))
+        self._mode_desc_var.set(explanations.get(pid, ""))
 
     def _hardware_set_done(self, pid: str) -> None:
         active = {
             "gen": {"normal": {"ssd"}, "ai": {"ssd"}},
             "load_b": {"normal": {"ram", "page"}, "ai": set()},
-            "load_o": {"normal": set(), "ai": {"ram", "page"}},
+            "load_o": {"normal": set(), "ai": {"ram", "prefetch"}},
             "kv_b": {"normal": {"ram"}, "ai": set()},
             "kv_o": {"normal": set(), "ai": {"ram", "prefetch"}},
         }.get(pid, {})
         self._set_hardware_activity(active, "READY")
 
-    def _set_hardware_activity(self, active: Dict[str, set], active_text: str) -> None:
-        for lane, blocks in self._hardware_vars.items():
-            for key, values in blocks.items():
-                is_active = key in active.get(lane, set())
-                colour = values["colour"]
-                values["card"].config(bg=colour if is_active else BG3)
-                values["status"].config(text=active_text if is_active else "Standby",
-                                         fg=BG if is_active else FG2,
-                                         bg=colour if is_active else BG3)
-                values["pulse"].config(bg=colour if is_active else BORDER)
-                for index, label in enumerate(values["labels"]):
-                    label.config(bg=colour if is_active else BG3,
-                                 fg=BG if is_active else (FG if index == 0 else FG2))
+    def _set_hardware_activity(self, active: Dict[str, set], active_text: str = "") -> None:
+        self._active_nodes = active
+        self._redraw_canvas()
 
     def _hardware_reset(self) -> None:
-        self._set_hardware_activity({}, "Waiting")
+        self._set_hardware_activity({"normal": set(), "ai": set()})
+        self._batch_var.set("Batch: Standby (0/20)")
+        self._loss_var.set("Loss: --")
+        self._io_wait_var.set("I/O Wait: -- ms")
+        self._comp_var.set("Compute: -- ms")
+        self._mode_desc_var.set("Pipeline Status: Waiting to initialize model training simulation...")
         if self._guide_var is not None:
-            self._guide_var.set("Press Next Step to inspect the data flow, or run the benchmark for live activity.")
+            self._guide_var.set("Press 'Next Step' to inspect data flow mechanics, or click 'Run Benchmark' for live execution.")
 
     def _next_guide_step(self) -> None:
         steps = [
-            ("normal", {"app", "ssd"}, "Step 1/5: the application requests model data from storage."),
-            ("normal", {"page", "ram"}, "Step 2/5: normal I/O copies data through the OS page cache into RAM."),
-            ("normal", {"cpu", "ram"}, "Step 3/5: the CPU consumes the RAM-resident KV-cache block."),
-            ("ai", {"ssd", "prefetch", "page"}, "Step 4/5: AI-SSD maps storage and prefetches the next block."),
-            ("ai", {"cpu", "ram", "prefetch"}, "Step 5/5: CPU compute overlaps with the next-block prefetch."),
+            ("Step 1/5: Model Checkpoint Initialization",
+             {"normal": {"app", "ssd"}, "ai": {"app", "ssd"}},
+             "Step 1/5: Training starts - Model App requests weight checkpoint blocks from SSD storage."),
+            ("Step 2/5: Standard OS Read & Page Cache Overhead",
+             {"normal": {"ssd", "page", "ram"}, "ai": set()},
+             "Step 2/5: Baseline I/O - Kernel reads 4KB chunks into OS Page Cache, then copies to RAM (double copy penalty)."),
+            ("Step 3/5: Synchronous Compute Stall (I/O Bottleneck)",
+             {"normal": {"ram", "cpu"}, "ai": set()},
+             "Step 3/5: Baseline Stall - CPU/GPU compute halts waiting for blocking disk reads (0% hit rate, high latency)."),
+            ("Step 4/5: AI-SSD Zero-Copy mmap & Predictive Prefetch",
+             {"normal": set(), "ai": {"ssd", "prefetch", "ram"}},
+             "Step 4/5: AI-SSD - File mapped via mmap zero-copy; Async Prefetch worker pre-faults upcoming tensor blocks."),
+            ("Step 5/5: Overlapped Compute & Accelerated Training",
+             {"normal": set(), "ai": {"prefetch", "ram", "cpu", "app"}},
+             "Step 5/5: AI-SSD Accelerated - CPU compute overlaps seamlessly with background prefetching, eliminating stalls!"),
         ]
         self._guide_index = (self._guide_index + 1) % len(steps)
-        lane, active_blocks, explanation = steps[self._guide_index]
-        self._set_hardware_activity({lane: active_blocks}, "ACTIVE")
+        title, active, explanation = steps[self._guide_index]
+        self._set_hardware_activity(active, "ACTIVE")
         if self._guide_var is not None:
             self._guide_var.set(explanation)
+        self._mode_desc_var.set(f"WALKTHROUGH: {title} - {explanation}")
 
     # -----------------------------------------------------------------------
     # Log helpers

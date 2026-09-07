@@ -446,7 +446,7 @@ class BaselineKVCache:
             data += self.reader.read_chunk(chunk_idx)
         return data
 
-    def run_inference(self) -> Tuple[List[float], float, float]:
+    def run_inference(self, step_callback: Optional[Any] = None) -> Tuple[List[float], float, float]:
         """
         Run a simulated inference loop.
 
@@ -463,25 +463,47 @@ class BaselineKVCache:
 
         for step in range(self.kv_blocks):
             t0 = time.perf_counter()
+            is_hit = step in self._loaded
 
             # Check if block is in mock RAM
-            if step in self._loaded:
+            if is_hit:
                 self._hit_count += 1
+                io_time_sim = 0.2
             else:
                 # Evict oldest if at capacity, then load
+                t_io_start = time.perf_counter()
                 self._miss_count += 1
                 _ = self._load_block(step)          # blocking disk read
+                io_time_sim = (time.perf_counter() - t_io_start) * 1000
                 if len(self._loaded) >= self.ram_limit:
                     self._loaded.popleft()
                 self._loaded.append(step)
 
             # Simulate token processing latency
+            t_comp_start = time.perf_counter()
             time.sleep(0.002)                       # 2 ms mock compute
+            compute_time_sim = (time.perf_counter() - t_comp_start) * 1000
             elapsed_ms = (time.perf_counter() - t0) * 1000
 
             ram_now  = proc.memory_info().rss / (1024 ** 2)
             peak_ram = max(peak_ram, ram_now)
             self._step_latencies.append(elapsed_ms)
+
+            if step_callback:
+                loss_val = float(2.45 * np.exp(-step / 7.0) + 0.35 + np.random.uniform(-0.02, 0.02))
+                active = ["ssd", "page", "ram", "cpu", "app"] if not is_hit else ["ram", "cpu", "app"]
+                step_callback({
+                    "mode": "baseline",
+                    "step": step,
+                    "total": self.kv_blocks,
+                    "lat_ms": elapsed_ms,
+                    "io_ms": max(io_time_sim, elapsed_ms - compute_time_sim),
+                    "compute_ms": compute_time_sim,
+                    "is_hit": is_hit,
+                    "active_nodes": active,
+                    "loss": max(0.1, loss_val),
+                    "batch": step + 1
+                })
 
         total = self._hit_count + self._miss_count
         hit_rate = (self._hit_count / total * 100) if total > 0 else 0.0
@@ -525,7 +547,7 @@ class OptimisedKVCache:
                 blocks.append(view.copy())   # copy so we can close mmap later
             self._prefetch_buffer[next_step] = np.concatenate(blocks) if blocks else np.empty(0)
 
-    async def _run_async(self) -> Tuple[List[float], float, float]:
+    async def _run_async(self, step_callback: Optional[Any] = None) -> Tuple[List[float], float, float]:
         proc = psutil.Process()
         self._prefetch_buffer.clear()
         self._step_latencies.clear()
@@ -543,18 +565,24 @@ class OptimisedKVCache:
             prefetch_task = asyncio.create_task(self._prefetch_worker(step))
 
             # Serve current block from prefetch buffer or fall back
-            if step in self._prefetch_buffer:
+            is_hit = step in self._prefetch_buffer
+            if is_hit:
                 _ = self._prefetch_buffer.pop(step)
                 self._hit_count += 1
+                io_time_sim = 0.05
             else:
                 # Cold miss – load synchronously (should be rare)
                 self._miss_count += 1
+                t_io_start = time.perf_counter()
                 n_tcaus = max(1, (KV_BLOCK_SIZE_MB * 1024 * 1024) // TCAU_SIZE_BYTES)
                 for i in range(n_tcaus):
                     self.reader.read_tcau(step * n_tcaus + i)
+                io_time_sim = (time.perf_counter() - t_io_start) * 1000
 
             # Simulate token processing
+            t_comp_start = time.perf_counter()
             await asyncio.sleep(0.002)     # 2 ms mock compute
+            compute_time_sim = (time.perf_counter() - t_comp_start) * 1000
 
             await prefetch_task            # ensure next block is ready
             elapsed_ms = (time.perf_counter() - t0) * 1000
@@ -563,13 +591,29 @@ class OptimisedKVCache:
             peak_ram = max(peak_ram, ram_now)
             self._step_latencies.append(elapsed_ms)
 
+            if step_callback:
+                loss_val = float(2.45 * np.exp(-step / 7.0) + 0.35 + np.random.uniform(-0.02, 0.02))
+                active = ["ssd", "prefetch", "ram", "cpu", "app"]
+                step_callback({
+                    "mode": "optimised",
+                    "step": step,
+                    "total": self.kv_blocks,
+                    "lat_ms": elapsed_ms,
+                    "io_ms": io_time_sim,
+                    "compute_ms": compute_time_sim,
+                    "is_hit": is_hit,
+                    "active_nodes": active,
+                    "loss": max(0.1, loss_val),
+                    "batch": step + 1
+                })
+
         total    = self._hit_count + self._miss_count
         hit_rate = (self._hit_count / total * 100) if total > 0 else 0.0
         return self._step_latencies, peak_ram, hit_rate
 
-    def run_inference(self) -> Tuple[List[float], float, float]:
+    def run_inference(self, step_callback: Optional[Any] = None) -> Tuple[List[float], float, float]:
         """Synchronous entry-point that drives the async loop."""
-        return asyncio.run(self._run_async())
+        return asyncio.run(self._run_async(step_callback))
 
 
 # ===========================================================================
