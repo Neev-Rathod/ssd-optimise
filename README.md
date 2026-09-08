@@ -20,6 +20,114 @@ The optimised path models an SSD designed to keep AI accelerators supplied with 
 
 These ideas lower tail latency and PCIe traffic while retaining a clear host-visible data path and predictable QoS.
 
+### How each optimization works
+
+The optimizations are complementary. The data engine decides what should be read
+and prepared, the cache keeps likely-to-be-reused data close, the DMA path moves it
+with fewer copies, and QoS scheduling decides which request should use the device
+next.
+
+#### 1. Tensor-aware firmware QoS
+
+**Problem:** A normal SSD sees a stream of blocks. It does not know that some
+blocks are the next training batch, some are model metadata, and some are a
+checkpoint write that can wait.
+
+**Optimization:** The SSD exposes or learns request classes such as:
+
+- **Training reads:** latency-sensitive and sequential; keep these queues moving.
+- **Metadata and KV-cache reads:** small and latency-sensitive; serve hot blocks
+  quickly.
+- **Checkpoint writes:** large but deferrable; schedule them in spare bandwidth.
+- **Speculative prefetches:** useful only when confidence is high; throttle or
+  cancel them when they compete with demanded reads.
+
+The controller can place sequential tensor shards near one another, assign higher
+priority to the next required batch, and drain checkpoint writes in the background.
+This reduces tail latency and prevents a large save operation from blocking the
+next training read. In this emulator, the policy is represented by the separate
+traditional and optimized paths and by the asynchronous checkpoint stage; actual
+firmware queue scheduling is proposed rather than implemented.
+
+#### 2. Adaptive DRAM/SLC caching
+
+**Problem:** Re-reading metadata, KV-cache blocks, or recently used tensors from
+NAND adds latency. Caching everything is also wasteful because the cache is small
+and speculative data can evict useful data.
+
+**Optimization:** The SSD maintains a hot-data cache backed by controller DRAM or
+an SLC flash region. A runtime can provide hints such as:
+
+1. Keep model metadata and frequently reused KV blocks resident.
+2. Prefetch the next block only when the access pattern is predictable.
+3. Give demanded reads priority over speculative blocks.
+4. Evict cold or low-confidence data first.
+5. Track cache hits, misses, confidence, queue depth, and wasted prefetch bytes.
+
+For example, a sequential training shard makes the next shard a good prefetch
+candidate. A random KV-cache access should not cause a long speculative read that
+pollutes the cache. The emulator demonstrates the effect with an in-memory KV
+cache and reports the resulting hit rate; it does not implement a real SSD DRAM
+or SLC cache controller.
+
+#### 3. Computational storage data engine
+
+**Problem:** Moving compressed or unnecessary bytes through host RAM and PCIe
+wastes bandwidth and CPU time.
+
+**Optimization:** Controller-side cores can perform lightweight, data-parallel
+work before DMA, such as:
+
+- Decompression
+- Checksum and integrity validation
+- Record selection or filtering
+- Tensor layout conversion
+- Optional image decode, resize, and normalization
+
+The engine should only perform work that is cheaper near storage than after a full
+transfer. Heavy model layers remain GPU work. In this project, the engine is
+represented by the `SSD DATA ENGINE` stage and a modeled decompression/checksum/
+filter cost. Real image resizing is not performed by the emulator.
+
+#### 4. Direct data plane and zero-copy access
+
+**Problem:** Traditional I/O commonly follows `SSD -> kernel page cache -> host
+buffer -> PCIe -> VRAM`, which creates extra copies and synchronization points.
+
+**Optimization:** The optimized path maps the dataset with `mmap`, uses readahead
+hints, exposes zero-copy views, and models a GPUDirect-style DMA route:
+
+`NVMe SSD -> data engine -> PCIe/GPUDirect path -> GPU VRAM`
+
+The host still coordinates the operation, but it does not need to copy every
+payload through a user-space staging buffer. The emulator implements mmap,
+readahead hints, and NumPy views; real GPUDirect Storage and CXL hardware are not
+required or accessed.
+
+#### 5. Near-data preparation versus GPU preparation
+
+These stages have different owners:
+
+| Work                                      | Best location                                 | Reason                                     |
+| ----------------------------------------- | --------------------------------------------- | ------------------------------------------ |
+| Decompression, checksum, filtering        | SSD data engine                               | Reduce bytes before transfer               |
+| File and shard lookahead                  | SSD data engine/runtime                       | Hide storage latency                       |
+| Image decode or resize                    | Data engine if lightweight, otherwise CPU/GPU | Depends on codec and workload              |
+| Augmentation, batching, normalization     | Usually GPU or host preprocessing             | Uses tensor libraries and parallel kernels |
+| Matrix layers, attention, backpropagation | GPU accelerator                               | Requires large compute throughput          |
+| Checkpoint persistence                    | SSD data engine/NVMe path                     | Schedule asynchronously                    |
+
+The GUI shows these as separate stages so “data preparation” is not incorrectly
+described as GPU computation performed inside the SSD.
+
+#### 6. Asynchronous checkpoint offload
+
+Instead of stopping the accelerator until updated weights are written, the runtime
+places checkpoint data into an offload queue. The SSD data engine schedules that
+write behind urgent training reads while the GPU continues preparing or computing
+the next batch. The emulator shows this as `GPU -> CHECKPOINT WRITE -> SSD` and
+models it as an asynchronous optimized-path stage.
+
 ## Requirements
 
 - Windows
