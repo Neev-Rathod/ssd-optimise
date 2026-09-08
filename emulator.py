@@ -474,7 +474,7 @@ class StandardReader:
                 ram_now = proc.memory_info().rss / (1024 ** 2)
                 peak_ram = max(peak_ram, ram_now)
 
-        elapsed = hw_res["total_sec"]
+        elapsed = hw_res["io_sec"]
         throughput = (total_bytes / (1024 ** 2)) / max(elapsed, 1e-9)
         peak_usage = peak_ram - ram_start
 
@@ -571,7 +571,7 @@ class AISSDReader:
             peak_ram = max(peak_ram, ram_now)
             offset = end
 
-        elapsed = hw_res["total_sec"]
+        elapsed = hw_res["io_raw_sec"] + hw_res["io_sec"]
         throughput = (total_bytes / (1024 ** 2)) / max(elapsed, 1e-9)
         peak_usage = peak_ram - ram_start
         self.close()
@@ -615,6 +615,7 @@ class BaselineKVCache:
         self.ram_limit     = mock_ram_limit
         self._loaded: deque = deque(maxlen=mock_ram_limit)
         self._step_latencies: List[float] = []
+        self._estimated_step_latencies: List[float] = []
         self._hit_count   = 0
         self._miss_count  = 0
 
@@ -622,6 +623,7 @@ class BaselineKVCache:
         proc = psutil.Process()
         self._loaded.clear()
         self._step_latencies.clear()
+        self._estimated_step_latencies.clear()
         self._hit_count = 0
         self._miss_count = 0
         peak_ram = 0.0
@@ -641,13 +643,15 @@ class BaselineKVCache:
                     self._loaded.popleft()
                 self._loaded.append(step)
 
-            elapsed_ms = hw_res["total_ms"]
             io_time_sim = hw_res["io_ms"]
             compute_time_sim = hw_res["compute_ms"]
+            elapsed_ms = io_time_sim
+            estimated_elapsed_ms = hw_res["total_ms"]
 
             ram_now  = proc.memory_info().rss / (1024 ** 2)
             peak_ram = max(peak_ram, ram_now)
             self._step_latencies.append(elapsed_ms)
+            self._estimated_step_latencies.append(estimated_elapsed_ms)
 
             # Smooth UI progress tick
             time.sleep(0.015)
@@ -688,12 +692,14 @@ class OptimisedKVCache:
         self.kv_blocks = kv_blocks
         self.ram_limit = mock_ram_limit
         self._step_latencies: List[float] = []
+        self._estimated_step_latencies: List[float] = []
         self._hit_count   = 0
         self._miss_count  = 0
 
     def run_inference(self, step_callback: Optional[Any] = None) -> Tuple[List[float], float, float]:
         proc = psutil.Process()
         self._step_latencies.clear()
+        self._estimated_step_latencies.clear()
         self._hit_count   = 0
         self._miss_count  = 0
         peak_ram = 0.0
@@ -710,13 +716,15 @@ class OptimisedKVCache:
                 self._miss_count += 1
                 hw_res = cycle_model.compute_optimised_pipeline(block_bytes, compute_ratio=1.1)
 
-            elapsed_ms = hw_res["total_ms"]
-            io_time_sim = hw_res["io_ms"]
+            io_time_sim = hw_res["io_raw_ms"] + hw_res["io_ms"]
             compute_time_sim = hw_res["compute_ms"]
+            elapsed_ms = io_time_sim
+            estimated_elapsed_ms = hw_res["total_ms"]
 
             ram_now  = proc.memory_info().rss / (1024 ** 2)
             peak_ram = max(peak_ram, ram_now)
             self._step_latencies.append(elapsed_ms)
+            self._estimated_step_latencies.append(estimated_elapsed_ms)
 
             # Smooth UI progress tick
             time.sleep(0.015)
@@ -756,13 +764,15 @@ class OptimisedKVCache:
 @dataclass
 class BenchmarkResult:
     label:               str
-    dataset_latency_ms:  float      # full dataset load latency in ms
+    dataset_latency_ms:  float      # measured/modelled I/O latency, excluding GPU compute
     throughput_mb_s:     float      # dataset read throughput
     peak_ram_mb:         float      # peak RAM delta during dataset load
     kv_step_latencies:   List[float] = field(default_factory=list)
     kv_peak_ram_mb:      float = 0.0
     kv_hit_rate_pct:     float = 0.0
     hardware_breakdown:  Dict[str, Any] = field(default_factory=dict)
+    estimated_dataset_latency_ms: float = 0.0
+    estimated_kv_step_latencies: List[float] = field(default_factory=list)
 
     @property
     def total_execution_time_sec(self) -> float:
@@ -771,6 +781,10 @@ class BenchmarkResult:
     @property
     def avg_kv_latency_ms(self) -> float:
         return float(np.mean(self.kv_step_latencies)) if self.kv_step_latencies else 0.0
+
+    @property
+    def estimated_total_execution_time_sec(self) -> float:
+        return (self.estimated_dataset_latency_ms + sum(self.estimated_kv_step_latencies)) / 1000.0
 
     @property
     def p99_kv_latency_ms(self) -> float:
@@ -829,6 +843,8 @@ def run_benchmark(dataset_path: Path) -> Tuple[BenchmarkResult, BenchmarkResult]
         kv_peak_ram_mb     = kv_ram_b,
         kv_hit_rate_pct    = kv_hit_b,
         hardware_breakdown = hw_b,
+        estimated_dataset_latency_ms = hw_b["total_ms"],
+        estimated_kv_step_latencies = baseline_kv._estimated_step_latencies,
     )
     optimised = BenchmarkResult(
         label              = "Optimised (AI-SSD Emulated)",
@@ -839,6 +855,8 @@ def run_benchmark(dataset_path: Path) -> Tuple[BenchmarkResult, BenchmarkResult]
         kv_peak_ram_mb     = kv_ram_o,
         kv_hit_rate_pct    = kv_hit_o,
         hardware_breakdown = hw_o,
+        estimated_dataset_latency_ms = hw_o["total_ms"],
+        estimated_kv_step_latencies = opt_kv._estimated_step_latencies,
     )
     return baseline, optimised
 
@@ -907,6 +925,8 @@ def visualize(baseline: BenchmarkResult, optimised: BenchmarkResult,
 def print_summary(baseline: BenchmarkResult, optimised: BenchmarkResult) -> None:
     time_b_sec = baseline.total_execution_time_sec
     time_o_sec = optimised.total_execution_time_sec
+    estimated_b_sec = baseline.estimated_total_execution_time_sec
+    estimated_o_sec = optimised.estimated_total_execution_time_sec
     time_saved_sec = time_b_sec - time_o_sec
     pct_reduced = (time_saved_sec / max(1e-9, time_b_sec)) * 100.0
 
@@ -936,12 +956,15 @@ def print_summary(baseline: BenchmarkResult, optimised: BenchmarkResult) -> None
          f"{baseline.hardware_breakdown.get('gpu_utilization_pct', 14.8):.1f}%",
          f"{optimised.hardware_breakdown.get('gpu_utilization_pct', 98.5):.1f}%"),
         None,
-        ("TOTAL EXECUTION TIME",
+        ("BENCHMARK I/O TIME (NO GPU COMPUTE)",
          f"{time_b_sec:.3f} s",
          f"{time_o_sec:.3f} s"),
         ("TOTAL TIME REDUCED (SAVED)",
          "-",
          f"{time_saved_sec:.3f} s ({pct_reduced:.1f}% REDUCTION)"),
+        ("ESTIMATED TOTAL TIME (WITH GPU COMPUTE)",
+         f"{estimated_b_sec:.3f} s",
+         f"{estimated_o_sec:.3f} s"),
     ]
 
     print()

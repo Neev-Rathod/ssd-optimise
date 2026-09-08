@@ -421,7 +421,8 @@ class App(tk.Tk):
             c.create_text(cx + 6, cy + 9, text=detail, font=("Segoe UI", 6), fill=detail_col, anchor="center")
 
     def _draw_bezier_curve(self, c: tk.Canvas, p0: Tuple[int, int], p1: Tuple[int, int],
-                           p2: Tuple[int, int], p3: Tuple[int, int], fill: str, width: float) -> None:
+                           p2: Tuple[int, int], p3: Tuple[int, int], fill: str, width: float,
+                           tags: Tuple[str, ...] = ()) -> None:
         """Render smooth cubic Bezier curve vector on Tkinter canvas."""
         points = []
         steps = 20
@@ -431,7 +432,7 @@ class App(tk.Tk):
             y = (1-t)**3 * p0[1] + 3*(1-t)**2 * t * p1[1] + 3*(1-t) * t**2 * p2[1] + t**3 * p3[1]
             points.extend([x, y])
 
-        c.create_line(*points, fill=fill, width=width, smooth=True, tags=kwargs.get("tags", ""))
+        c.create_line(*points, fill=fill, width=width, smooth=True, tags=tags)
 
     def _on_canvas_hover(self, event: tk.Event) -> None:
         x, y = event.x, event.y
@@ -659,13 +660,13 @@ class App(tk.Tk):
             import gc
             gc.collect()
             std_reader = emu.StandardReader(dataset_path)
-            elapsed_b, tp_b, ram_b = std_reader.read_all()
+            elapsed_b, tp_b, ram_b, hw_b = std_reader.read_all()
             self._q.put(("phase_done", "load_b", f"{elapsed_b*1000:.0f} ms | {tp_b:.0f} MB/s"))
 
             self._q.put(("phase_start", "load_o"))
             gc.collect()
             ai_reader = emu.AISSDReader(dataset_path)
-            elapsed_o, tp_o, ram_o = ai_reader.read_all()
+            elapsed_o, tp_o, ram_o, hw_o = ai_reader.read_all()
             self._q.put(("phase_done", "load_o", f"{elapsed_o*1000:.0f} ms | {tp_o:.0f} MB/s"))
 
             self._q.put(("phase_start", "kv_b"))
@@ -696,6 +697,9 @@ class App(tk.Tk):
                 kv_step_latencies=kv_lats_b,
                 kv_peak_ram_mb=kv_ram_b,
                 kv_hit_rate_pct=kv_hit_b,
+                hardware_breakdown=hw_b,
+                estimated_dataset_latency_ms=hw_b["total_ms"],
+                estimated_kv_step_latencies=baseline_kv._estimated_step_latencies,
             )
             optimised = emu.BenchmarkResult(
                 label="Optimised (AI-SSD Emulated)",
@@ -705,6 +709,9 @@ class App(tk.Tk):
                 kv_step_latencies=kv_lats_o,
                 kv_peak_ram_mb=kv_ram_o,
                 kv_hit_rate_pct=kv_hit_o,
+                hardware_breakdown=hw_o,
+                estimated_dataset_latency_ms=hw_o["total_ms"],
+                estimated_kv_step_latencies=opt_kv._estimated_step_latencies,
             )
 
             self._q.put(("results", baseline, optimised))
@@ -917,6 +924,7 @@ class App(tk.Tk):
             ("Dataset Load Latency", f"{b.dataset_latency_ms:.1f} ms", f"{o.dataset_latency_ms:.1f} ms", _su(b.dataset_latency_ms, o.dataset_latency_ms)),
             ("Read Throughput", f"{b.throughput_mb_s:.0f} MB/s", f"{o.throughput_mb_s:.0f} MB/s", _su(b.throughput_mb_s, o.throughput_mb_s, higher=True)),
             ("KV Step Latency", f"{b.avg_kv_latency_ms:.2f} ms", f"{o.avg_kv_latency_ms:.2f} ms", _su(b.avg_kv_latency_ms, o.avg_kv_latency_ms)),
+            ("Estimated Total Time", f"{b.estimated_total_execution_time_sec:.2f} s", f"{o.estimated_total_execution_time_sec:.2f} s", _su(b.estimated_total_execution_time_sec, o.estimated_total_execution_time_sec)),
             ("Cache Hit Rate", f"{b.kv_hit_rate_pct:.1f}%", f"{o.kv_hit_rate_pct:.1f}%", _su(b.kv_hit_rate_pct, o.kv_hit_rate_pct, higher=True)),
             ("GPU Compute Utilization", "14.2%", "98.5%", "6.9x higher"),
         ]
