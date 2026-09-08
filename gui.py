@@ -108,6 +108,7 @@ class App(tk.Tk):
             ("ssd",  "AI NVMe SSD",       "Dataset / Checkpoints", 100, 170),
             ("page", "OS PAGE CACHE",    "Kernel Copy Buffer",    290, 170),
             ("ram",  "DEDICATED DDR5 RAM", "Training Buffer",      480, 170),
+            ("checkpoint", "CHECKPOINT WRITE", "Async Save Buffer", 480, 270),
             ("pcie", "PCIe 5.0 FABRIC",  "CPU-to-Accelerator",    670, 170),
             ("vram", "GPU VRAM",         "HBM3 Memory View",      860, 170),
             ("cpu",  "AI ACCELERATOR",   "Compute (Stalled)",     1050,170),
@@ -117,6 +118,7 @@ class App(tk.Tk):
         self._nodes_mode2 = [
             ("ssd",       "AI NVMe SSD",      "Direct Storage + FTL",    100, 170),
             ("prefetch",  "SSD DATA ENGINE",  "Async DMA + Lookahead",   290, 170),
+            ("prep",      "TENSOR PREP",      "Optional Decode / Resize",  290, 270),
             ("pcie",      "GPUDirect (GDS)",  "Direct PCIe Fabric",      480, 170),
             ("vram",      "GPU VRAM",         "Zero-Copy Memory",        670, 170),
             ("cpu",       "AI ACCELERATOR",   "Continuous Compute (98%)",860, 170),
@@ -295,15 +297,12 @@ class App(tk.Tk):
 
         self._batch_var = tk.StringVar(value="Batch: Standby (0/20)")
         self._loss_var = tk.StringVar(value="Loss: --")
-        self._gpu_util_var = tk.StringVar(value="GPU Utilization: --%")
         self._io_wait_var = tk.StringVar(value="PCIe Stall: -- ms")
         self._mode_desc_var = tk.StringVar(value="System Architecture Initialized.")
 
         tk.Label(self._train_bar, textvariable=self._batch_var, font=("Segoe UI", 9, "bold"), fg=NEON_BLUE, bg=BG3).pack(side="left", padx=8)
         tk.Label(self._train_bar, text="|", fg=FG2, bg=BG3).pack(side="left")
         tk.Label(self._train_bar, textvariable=self._loss_var, font=("Segoe UI", 9, "bold"), fg=NEON_GRN, bg=BG3).pack(side="left", padx=8)
-        tk.Label(self._train_bar, text="|", fg=FG2, bg=BG3).pack(side="left")
-        tk.Label(self._train_bar, textvariable=self._gpu_util_var, font=("Segoe UI", 9, "bold"), fg=NEON_PURPLE, bg=BG3).pack(side="left", padx=8)
         tk.Label(self._train_bar, text="|", fg=FG2, bg=BG3).pack(side="left")
         tk.Label(self._train_bar, textvariable=self._io_wait_var, font=("Segoe UI", 9), fg=NEON_RED, bg=BG3).pack(side="left", padx=8)
         tk.Label(self._train_bar, textvariable=self._mode_desc_var, font=("Segoe UI", 8, "italic"), fg=FG2, bg=BG3).pack(side="right", padx=8)
@@ -376,7 +375,7 @@ class App(tk.Tk):
 
         elif mode == "ai":
             if visible_nodes.intersection({"ssd", "prefetch"}):
-                c.create_rectangle(30, 40, 370, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
+                c.create_rectangle(30, 40, 370, 320, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
                 c.create_text(40, 52, text="AI NVMe SSD + COMPUTATIONAL DATA ENGINE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="w")
             if "pcie" in visible_nodes:
                 c.create_rectangle(410, 40, 550, 230, fill="#0f1322", outline="#252d47", width=1)
@@ -393,9 +392,11 @@ class App(tk.Tk):
         node_by_key = {node[0]: node for node in nodes}
         if mode == "normal":
             links = [("ssd", "page"), ("page", "ram"), ("ram", "pcie"),
-                     ("pcie", "vram"), ("vram", "cpu"), ("cpu", "loop")]
+                     ("pcie", "vram"), ("vram", "cpu"), ("cpu", "loop"),
+                     ("cpu", "checkpoint"), ("checkpoint", "ssd")]
         else:
             links = [("ssd", "prefetch"), ("prefetch", "pcie"), ("pcie", "vram"),
+                     ("prefetch", "prep"), ("prep", "pcie"),
                      ("vram", "cpu"), ("cpu", "loop"), ("cpu", "checkpoint"),
                      ("checkpoint", "ssd")]
         visible_edges = set(self._active_edges)
@@ -406,11 +407,13 @@ class App(tk.Tk):
                     ({"page", "ram"}, {("page", "ram")}),
                     ({"ram", "pcie", "vram"}, {("ram", "pcie"), ("pcie", "vram")}),
                     ({"vram", "cpu", "loop"}, {("vram", "cpu"), ("cpu", "loop")}),
+                    ( {"cpu", "loop", "checkpoint", "ssd"}, {("cpu", "checkpoint"), ("checkpoint", "ssd")} ),
                 ]
             else:
                 walkthrough = [
                     ({"ssd", "prefetch"}, {("ssd", "prefetch")}),
-                    ({"prefetch", "pcie", "vram"}, {("prefetch", "pcie"), ("pcie", "vram")}),
+                    ({"prefetch", "prep"}, {("prefetch", "prep")}),
+                    ({"prep", "pcie", "vram"}, {("prep", "pcie"), ("pcie", "vram")}),
                     ({"vram", "cpu", "loop"}, {("vram", "cpu"), ("cpu", "loop")}),
                     ({"cpu", "loop", "checkpoint", "ssd"}, {("cpu", "checkpoint"), ("checkpoint", "ssd")}),
                 ]
@@ -482,11 +485,13 @@ class App(tk.Tk):
             walkthrough = [
                 {"ssd", "page"}, {"page", "ram"},
                 {"ram", "pcie", "vram"}, {"vram", "cpu", "loop"},
+                {"cpu", "loop", "checkpoint", "ssd"},
             ]
         else:
             walkthrough = [
-                {"ssd", "prefetch"}, {"prefetch", "pcie", "vram"},
-                {"vram", "cpu", "loop"}, {"cpu", "loop", "checkpoint", "ssd"},
+                {"ssd", "prefetch"}, {"prefetch", "prep"},
+                {"prep", "pcie", "vram"}, {"vram", "cpu", "loop"},
+                {"cpu", "loop", "checkpoint", "ssd"},
             ]
         return set().union(*walkthrough[:guide_step + 1])
 
@@ -528,9 +533,9 @@ class App(tk.Tk):
         toolbar.pack(fill="x")
         tk.Label(toolbar, text="AI Hardware System Architecture", font=FONT_TITLE, fg=NEON_BLUE, bg=BG2).pack(side="left")
         tk.Button(
-            toolbar, text="<", font=("Segoe UI", 16, "bold"), width=3,
+            toolbar, text="Previous Step", font=("Segoe UI", 9, "bold"),
             fg=FG, bg=BG3, activebackground=NEON_PURPLE, activeforeground="white",
-            relief="flat", bd=0, cursor="hand2", command=self._next_guide_step,
+            relief="flat", bd=0, padx=10, pady=5, cursor="hand2", command=self._previous_guide_step,
         ).pack(side="right", padx=4)
         tk.Button(
             toolbar, text="Next Step", font=("Segoe UI", 9, "bold"),
@@ -538,16 +543,18 @@ class App(tk.Tk):
             relief="flat", bd=0, padx=10, pady=5, cursor="hand2", command=self._next_guide_step,
         ).pack(side="right", padx=4)
         tk.Button(
-            toolbar, text=">", font=("Segoe UI", 16, "bold"), width=3,
-            fg=FG, bg=BG3, activebackground=NEON_PURPLE, activeforeground="white",
-            relief="flat", bd=0, cursor="hand2", command=self._next_guide_step,
-        ).pack(side="right", padx=4)
-        tk.Button(
             toolbar, text="Exit", font=("Segoe UI", 9, "bold"),
             fg=FG, bg=BG3, activebackground=NEON_RED, activeforeground="white",
             relief="flat", bd=0, padx=12, pady=5, cursor="hand2",
             command=self._close_topology_fullscreen,
         ).pack(side="right", padx=(12, 0))
+
+        explanation = tk.Frame(window, bg=BG2, padx=18, pady=10)
+        explanation.pack(fill="x", side="bottom")
+        tk.Label(
+            explanation, textvariable=self._guide_var, font=("Segoe UI", 11),
+            fg=NEON_GRN, bg=BG2, justify="left", anchor="w", wraplength=1400,
+        ).pack(fill="x")
 
         self._canvas.pack_forget()
         self._canvas = tk.Canvas(window, bg="#0d0f1a", highlightthickness=0)
@@ -721,18 +728,31 @@ class App(tk.Tk):
         else:
             self._next_guide_step_mode3()
 
-    def _next_guide_step_mode1(self) -> None:
+    def _previous_guide_step(self) -> None:
+        if self._current_mode == "normal":
+            self._next_guide_step_mode1(-1)
+        elif self._current_mode == "ai":
+            self._next_guide_step_mode2(-1)
+        else:
+            self._next_guide_step_mode3(-1)
+
+    def _next_guide_step_mode1(self, direction: int = 1) -> None:
         steps = [
-            ("Step 1/4: Standard I/O Read Request", {"ssd", "page"}, {("ssd", "page")},
-             "Step 1/4 (Traditional): Application issues open()+read() -> Kernel allocates OS Page Cache buffer."),
-            ("Step 2/4: Kernel Double-Buffering Penalty", {"page", "ram"}, {("page", "ram")},
-             "Step 2/4 (Traditional): OS copies 4KB chunks from Page Cache into User-Space RAM (double copy overhead)."),
-            ("Step 3/4: PCIe Transit & Dedicated-Memory Delay", {"ram", "pcie", "vram"}, {("ram", "pcie"), ("pcie", "vram")},
-             "Step 3/4 (Traditional): Data copied over PCIe bus to GPU VRAM with high transfer latency."),
-            ("Step 4/4: Accelerator Compute Stall", {"vram", "cpu", "loop"}, {("vram", "cpu"), ("cpu", "loop")},
-             "Step 4/4 (Traditional): The AI accelerator waits for blocking disk reads (14% utilization)."),
+            ("Step 1/5: Application Read Request", {"ssd", "page"}, {("ssd", "page")},
+             "Step 1/5 (Traditional): The application requests the next training batch; the OS and NVMe driver prepare a blocking read into the page cache."),
+            ("Step 2/5: SSD Read -> OS Page Cache", {"ssd", "page"}, {("ssd", "page")},
+             "Step 2/5 (Traditional): The NVMe SSD reads checkpoint or dataset bytes into the kernel page cache. The application waits for this read to finish."),
+            ("Step 3/5: Page Cache Copy -> Host RAM", {"page", "ram"}, {("page", "ram")},
+             "Step 3/5 (Traditional): The CPU copies bytes from the kernel page cache into a user-space training buffer in host RAM."),
+            ("Step 4/5: Host RAM -> GPU VRAM -> Compute", {"ram", "pcie", "vram", "cpu", "loop"}, {("ram", "pcie"), ("pcie", "vram"), ("vram", "cpu"), ("cpu", "loop")},
+             "Step 4/5 (Traditional): The host pins and transfers the batch over PCIe. GPU kernels can decode, resize, normalize, and compute only after the batch arrives in VRAM."),
+            ("Step 5/5: Checkpoint Write", {"cpu", "loop", "checkpoint", "ssd"}, {("cpu", "checkpoint"), ("checkpoint", "ssd")},
+             "Step 5/5 (Traditional): Updated weights are copied to a save buffer and written back to the SSD, creating another synchronous I/O phase."),
         ]
-        self._guide_step_mode1 = (self._guide_step_mode1 + 1) % len(steps)
+        if direction < 0 and self._guide_step_mode1 < 0:
+            self._guide_step_mode1 = 0
+        else:
+            self._guide_step_mode1 = (self._guide_step_mode1 + direction) % len(steps)
         title, active, edges, explanation = steps[self._guide_step_mode1]
         self._active_nodes = active
         self._active_edges = edges
@@ -741,18 +761,23 @@ class App(tk.Tk):
         self._mode_desc_var.set(f"MODE 1 WALKTHROUGH: {title}")
         self._redraw_canvas()
 
-    def _next_guide_step_mode2(self) -> None:
+    def _next_guide_step_mode2(self, direction: int = 1) -> None:
         steps = [
-            ("Step 1/4: Direct Zero-Copy mmap Mapping", {"ssd", "prefetch"}, {("ssd", "prefetch")},
-             "Step 1/4 (AI-SSD): Dataset mapped directly into virtual address space via mmap zero-copy."),
-            ("Step 2/4: Async DMA Prefetch & GDS Bypass", {"prefetch", "pcie", "vram"}, {("prefetch", "pcie"), ("pcie", "vram")},
-             "Step 2/4 (AI-SSD): Background DMA prefetch engine streams upcoming pages over GPUDirect Storage."),
-            ("Step 3/4: Overlapped Accelerator Compute", {"vram", "cpu", "loop"}, {("vram", "cpu"), ("cpu", "loop")},
-             "Step 3/4 (AI-SSD): CUDA Tensor Cores compute at 98% utilization without waiting for disk reads."),
-            ("Step 4/4: Async Checkpoint Offload -> SSD", {"cpu", "loop", "checkpoint", "ssd"}, {("cpu", "checkpoint"), ("checkpoint", "ssd")},
-             "Step 4/4 (AI-SSD): Checkpoint weights save to SSD asynchronously in the background (0ms GPU freeze)."),
+            ("Step 1/5: Request Data & Look Ahead", {"ssd", "prefetch"}, {("ssd", "prefetch")},
+             "Step 1/5 (AI-SSD): The workload requests the next shard; the SSD data engine predicts upcoming pages and starts reading them early."),
+            ("Step 2/5: Prepare Tensor Data Near Storage", {"prefetch", "prep"}, {("prefetch", "prep")},
+             "Step 2/5 (AI-SSD): Optional near-data work can decompress, validate, decode, resize, and normalize image or tensor records before transfer. This emulator models the stage but does not resize real images."),
+            ("Step 3/5: Direct DMA to GPU VRAM", {"prep", "pcie", "vram"}, {("prep", "pcie"), ("pcie", "vram")},
+             "Step 3/5 (AI-SSD): Prepared batches move over the GPUDirect-style PCIe path directly into VRAM, avoiding an extra host-buffer copy."),
+            ("Step 4/5: GPU Preprocess & Model Compute", {"vram", "cpu", "loop"}, {("vram", "cpu"), ("cpu", "loop")},
+             "Step 4/5 (AI-SSD): GPU kernels can finish device-side normalization, augmentation, batching, and tensor computation after the data reaches VRAM."),
+            ("Step 5/5: Async Checkpoint Offload -> SSD", {"cpu", "loop", "checkpoint", "ssd"}, {("cpu", "checkpoint"), ("checkpoint", "ssd")},
+             "Step 5/5 (AI-SSD): Checkpoint weights are written back asynchronously while the next batch is prepared, keeping compute from waiting on the save."),
         ]
-        self._guide_step_mode2 = (self._guide_step_mode2 + 1) % len(steps)
+        if direction < 0 and self._guide_step_mode2 < 0:
+            self._guide_step_mode2 = 0
+        else:
+            self._guide_step_mode2 = (self._guide_step_mode2 + direction) % len(steps)
         title, active, edges, explanation = steps[self._guide_step_mode2]
         self._active_nodes = active
         self._active_edges = edges
@@ -761,16 +786,17 @@ class App(tk.Tk):
         self._mode_desc_var.set(f"MODE 2 WALKTHROUGH: {title}")
         self._redraw_canvas()
 
-    def _next_guide_step_mode3(self) -> None:
+    def _next_guide_step_mode3(self, direction: int = 1) -> None:
         steps = [
             ("Comparison 1/3: Latency Speedup", {"ssd", "vram", "cpu"},
              "Comparison 1/3: Traditional 197.5ms/step vs AI-SSD 13.2ms/step (14.9x Faster!)."),
             ("Comparison 2/3: Throughput Gain", {"ssd", "pcie", "vram"},
              "Comparison 2/3: Traditional 382 MB/s vs AI-SSD 2736 MB/s (7.2x Throughput!)."),
-            ("Comparison 3/3: Compute Efficiency", {"vram", "cpu", "loop"},
-             "Comparison 3/3: Traditional 14.2% GPU Compute vs AI-SSD 98.5% Compute Utilization!"),
         ]
-        self._guide_step_mode3 = (self._guide_step_mode3 + 1) % len(steps)
+        if direction < 0 and self._guide_step_mode3 < 0:
+            self._guide_step_mode3 = 0
+        else:
+            self._guide_step_mode3 = (self._guide_step_mode3 + direction) % len(steps)
         title, active, explanation = steps[self._guide_step_mode3]
         # Comparison intentionally has no topology canvas or active packet stream.
         self._active_nodes = set()
@@ -913,10 +939,8 @@ class App(tk.Tk):
             active_nodes = set(data["active_nodes"])
             active_edges = {tuple(edge) for edge in data.get("active_edges", [])}
 
-            gpu_util = 14.2 if mode == "baseline" else 98.5
             self._batch_var.set(f"Batch: {batch}/{total} ({(batch/total)*100:.0f}%)")
             self._loss_var.set(f"Loss: {loss:.4f}")
-            self._gpu_util_var.set(f"GPU Utilization: {gpu_util:.1f}%")
             self._io_wait_var.set(f"PCIe Stall: {io_ms:.1f} ms")
 
             is_chkpt = (batch in (10, 20))
@@ -1065,6 +1089,8 @@ class App(tk.Tk):
         def _su(bv: float, ov: float, higher: bool = False) -> str:
             if ov == 0:
                 return "-"
+            if higher and bv == 0:
+                return "n/a baseline"
             ratio = (ov / max(bv, 1e-9)) if higher else (bv / max(ov, 1e-9))
             return f"{ratio:.1f}x {'faster' if not higher else 'higher'}"
 
@@ -1074,7 +1100,6 @@ class App(tk.Tk):
             ("KV Step Latency", f"{b.avg_kv_latency_ms:.2f} ms", f"{o.avg_kv_latency_ms:.2f} ms", _su(b.avg_kv_latency_ms, o.avg_kv_latency_ms)),
             ("Estimated Total Time", f"{b.estimated_total_execution_time_sec:.2f} s", f"{o.estimated_total_execution_time_sec:.2f} s", _su(b.estimated_total_execution_time_sec, o.estimated_total_execution_time_sec)),
             ("Cache Hit Rate", f"{b.kv_hit_rate_pct:.1f}%", f"{o.kv_hit_rate_pct:.1f}%", _su(b.kv_hit_rate_pct, o.kv_hit_rate_pct, higher=True)),
-            ("GPU Compute Utilization", "14.2%", "98.5%", "6.9x higher"),
         ]
 
         for val in rows:
