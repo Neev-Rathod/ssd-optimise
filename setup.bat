@@ -25,13 +25,42 @@ if errorlevel 1 (
 )
 for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PY_VER=%%v
 echo [OK] Python %PY_VER% detected.
+REM -- Validate Python version and architecture (require 64-bit Python 3.10/3.11 recommended)
+for /f "tokens=1,2 delims=." %%a in ("%PY_VER%") do (
+    set PY_MAJOR=%%a
+    set PY_MINOR=%%b
+)
+for /f "delims=" %%a in ('python -c "import platform;print(platform.architecture()[0])"') do set PY_ARCH=%%a
+echo [INFO] Python architecture: %PY_ARCH%
+if "%PY_ARCH%" NEQ "64bit" (
+    echo [WARN] 32-bit Python detected. This project requires 64-bit Python for prebuilt wheels.
+    echo [WARN] Install 64-bit Python ^(3.10 or 3.11^) from https://www.python.org/downloads/windows/ and re-run setup.
+    echo.
+)
+if %PY_MAJOR% GTR 3 (
+    echo [WARN] Detected Python major version %PY_MAJOR%. Use Python 3.10 or 3.11 for best compatibility.
+) else (
+    if %PY_MAJOR% EQU 3 (
+        if %PY_MINOR% GTR 11 (
+            echo [WARN] Detected Python %PY_VER%. Some packages may not provide wheels for this version.
+            echo [WARN] Consider using Python 3.11 ^(64-bit^) to avoid building from source.
+        )
+    )
+)
 
 REM -- 2. Create virtual environment ---------------------------------
 if exist "%VENV_DIR%\Scripts\activate.bat" (
     echo [SKIP] Virtual environment already exists at %VENV_DIR%
 ) else (
     echo [....] Creating virtual environment...
-    python -m venv "%VENV_DIR%"
+    REM Prefer Python 3.11 if the py launcher is available
+    py -3.11 --version >nul 2>&1
+    if %errorlevel% EQU 0 (
+        py -3.11 -m venv "%VENV_DIR%"
+    ) else (
+        echo [INFO] Python 3.11 not found via py launcher; using default `python -m venv`.
+        python -m venv "%VENV_DIR%"
+    )
     if errorlevel 1 (
         echo [ERROR] Failed to create virtual environment.
         exit /b 1
@@ -57,7 +86,8 @@ REM Remove the --index-url line if you want CUDA support and have a GPU.
 pip install --quiet numpy==1.26.4
 pip install --quiet psutil==5.9.8
 pip install --quiet matplotlib==3.9.0
-pip install --quiet torch==2.3.0 --index-url https://download.pytorch.org/whl/cpu
+REM Install a CPU-compatible PyTorch wheel; avoid a strict pin so pip can select a compatible build
+pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
 
 if errorlevel 1 (
     echo [ERROR] Dependency installation failed.  Check your internet connection and try again.
