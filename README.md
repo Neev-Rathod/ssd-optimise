@@ -9,6 +9,17 @@ It also simulates LLM-style KV-cache inference, comparing synchronous block load
 
 > This is a software simulation, not a driver or a replacement for physical SSD benchmarking.
 
+## AI-Era SSD proposal
+
+The optimised path models an SSD designed to keep AI accelerators supplied with data while avoiding unnecessary copies:
+
+- **Tensor-aware firmware QoS:** place sequential training shards together, protect low-tail-latency read queues, and schedule checkpoint writes out of the critical path.
+- **Adaptive DRAM/SLC caching:** retain hot KV-cache blocks and model metadata, with confidence-gated prefetching so speculative reads do not waste NAND endurance or energy.
+- **Computational storage engine:** use controller cores for decompression, checksums, and simple tensor filtering before DMA, reducing transferred bytes and accelerator wakeups.
+- **Direct, observable data plane:** stream SSD data toward VRAM with GPUDirect today and CXL-ready interfaces later; expose queue depth, cache confidence, and energy telemetry to the runtime.
+
+These ideas lower tail latency and PCIe traffic while retaining a clear host-visible data path and predictable QoS.
+
 ## Requirements
 
 - Windows

@@ -491,7 +491,13 @@ class BaselineKVCache:
 
             if step_callback:
                 loss_val = float(2.45 * np.exp(-step / 7.0) + 0.35 + np.random.uniform(-0.02, 0.02))
-                active = ["ssd", "page", "ram", "cpu", "app"] if not is_hit else ["ram", "cpu", "app"]
+                if is_hit:
+                    active = ["ram", "pcie", "vram", "cpu", "loop"]
+                    active_edges = [("ram", "pcie"), ("pcie", "vram"), ("vram", "cpu"), ("cpu", "loop")]
+                else:
+                    active = ["ssd", "page", "ram", "pcie", "vram", "cpu", "loop"]
+                    active_edges = [("ssd", "page"), ("page", "ram"), ("ram", "pcie"),
+                                    ("pcie", "vram"), ("vram", "cpu"), ("cpu", "loop")]
                 step_callback({
                     "mode": "baseline",
                     "step": step,
@@ -501,6 +507,7 @@ class BaselineKVCache:
                     "compute_ms": compute_time_sim,
                     "is_hit": is_hit,
                     "active_nodes": active,
+                    "active_edges": active_edges,
                     "loss": max(0.1, loss_val),
                     "batch": step + 1
                 })
@@ -593,7 +600,12 @@ class OptimisedKVCache:
 
             if step_callback:
                 loss_val = float(2.45 * np.exp(-step / 7.0) + 0.35 + np.random.uniform(-0.02, 0.02))
-                active = ["ssd", "prefetch", "ram", "cpu", "app"]
+                active = ["ssd", "prefetch", "pcie", "vram", "cpu", "loop"]
+                active_edges = [("ssd", "prefetch"), ("prefetch", "pcie"), ("pcie", "vram"),
+                                ("vram", "cpu"), ("cpu", "loop")]
+                if step + 1 in (10, 20):
+                    active.extend(["checkpoint"])
+                    active_edges.extend([("cpu", "checkpoint"), ("checkpoint", "ssd")])
                 step_callback({
                     "mode": "optimised",
                     "step": step,
@@ -603,6 +615,7 @@ class OptimisedKVCache:
                     "compute_ms": compute_time_sim,
                     "is_hit": is_hit,
                     "active_nodes": active,
+                    "active_edges": active_edges,
                     "loss": max(0.1, loss_val),
                     "batch": step + 1
                 })

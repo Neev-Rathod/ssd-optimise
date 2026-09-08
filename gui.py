@@ -91,28 +91,29 @@ class App(tk.Tk):
         self._baseline: Optional[emu.BenchmarkResult] = None
         self._optimised: Optional[emu.BenchmarkResult] = None
         self._current_mode = "ai"  # "normal", "ai", or "comparison"
-        self._guide_step_mode1 = 0
-        self._guide_step_mode2 = 0
-        self._guide_step_mode3 = 0
+        self._guide_step_mode1 = -1
+        self._guide_step_mode2 = -1
+        self._guide_step_mode3 = -1
         self._packets = []
+        self._active_edges: Set[Tuple[str, str]] = set()
 
         # Node coordinates per mode
         self._nodes_mode1 = [
-            ("ssd",  "NVMe SSD STORAGE", "ROM / Checkpoints",     100, 170),
+            ("ssd",  "AI NVMe SSD",       "Dataset / Checkpoints", 100, 170),
             ("page", "OS PAGE CACHE",    "Kernel Copy Buffer",    290, 170),
-            ("ram",  "SYSTEM RAM",       "DDR5 Host Buffer",      480, 170),
-            ("pcie", "PCIe 5.0 BUS",     "Host-to-GPU Bridge",    670, 170),
+            ("ram",  "DEDICATED DDR5 RAM", "Training Buffer",      480, 170),
+            ("pcie", "PCIe 5.0 FABRIC",  "CPU-to-Accelerator",    670, 170),
             ("vram", "GPU VRAM",         "HBM3 Memory View",      860, 170),
-            ("cpu",  "CUDA CORES",       "Engine (Stalled)",      1050,170),
+            ("cpu",  "AI ACCELERATOR",   "Compute (Stalled)",     1050,170),
             ("loop", "FORWARD/BACKPROP", "Autoregressive Loop",   1050,270),
         ]
 
         self._nodes_mode2 = [
-            ("ssd",       "NVMe SSD STORAGE", "ROM / Direct Storage",   100, 170),
-            ("prefetch",  "PREFETCH ENGINE",  "Async DMA Lookahead",     290, 170),
-            ("pcie",      "GPUDirect (GDS)",  "Direct PCIe Bypass",      480, 170),
+            ("ssd",       "AI NVMe SSD",      "Direct Storage + FTL",    100, 170),
+            ("prefetch",  "SSD DATA ENGINE",  "Async DMA + Lookahead",   290, 170),
+            ("pcie",      "GPUDirect (GDS)",  "Direct PCIe Fabric",      480, 170),
             ("vram",      "GPU VRAM",         "Zero-Copy Memory",        670, 170),
-            ("cpu",       "CUDA CORES",       "Continuous Compute (98%)",860, 170),
+            ("cpu",       "AI ACCELERATOR",   "Continuous Compute (98%)",860, 170),
             ("loop",      "FORWARD/BACKPROP", "Autoregressive Loop",     860, 270),
             ("checkpoint","CHECKPOINT SAVE",  "Async Weight Offloader",  480, 270),
         ]
@@ -153,7 +154,10 @@ class App(tk.Tk):
         # 1. Hardware Architecture Panel with Mode Isolation & Bezier Edges
         self._build_hardware_topology_panel(content)
 
-        # 2. Dashboard & Performance Comparison Panels
+        # 2. Proposed AI-era SSD design (applies to the optimised path)
+        self._build_ai_ssd_design_panel(content)
+
+        # 3. Dashboard & Performance Comparison Panels
         self._build_dashboard_panels(content)
 
     def _build_header(self, parent: tk.Widget) -> None:
@@ -217,29 +221,34 @@ class App(tk.Tk):
 
     def _select_mode(self, mode: str) -> None:
         self._current_mode = mode
+        # A selected mode describes an architecture; it must not imply that it is running.
+        self._active_nodes = set()
+        self._active_edges = set()
+        self._packets = []
         if mode == "normal":
             self._tab_btn_norm.config(bg=NEON_RED, fg="white")
             self._tab_btn_ai.config(bg=BG2, fg=FG2)
             self._tab_btn_comp.config(bg=BG2, fg=FG2)
-            self._active_nodes = {"ssd", "page", "ram", "pcie", "vram", "cpu", "loop"}
-            self._guide_var.set("MODE 1: Traditional Pipeline - Showing ONLY Standard I/O components & GPU idle stalls.")
-            self._mode_desc_var.set("MODE 1: Kernel OS Page Cache copies cause CPU context switches & GPU idle stalls.")
+            self._guide_var.set("MODE 1 is idle. Click Next Step or run the benchmark to animate one valid data path.")
+            self._mode_desc_var.set("MODE 1: Traditional I/O uses page-cache copies and can stall the accelerator.")
         elif mode == "ai":
             self._tab_btn_norm.config(bg=BG2, fg=FG2)
             self._tab_btn_ai.config(bg=NEON_BLUE, fg="black")
             self._tab_btn_comp.config(bg=BG2, fg=FG2)
-            self._active_nodes = {"ssd", "prefetch", "pcie", "vram", "cpu", "loop", "checkpoint"}
-            self._guide_var.set("MODE 2: AI-SSD Pipeline - Showing ONLY GPUDirect Storage mmap & Async Prefetch components.")
-            self._mode_desc_var.set("MODE 2: Zero-Copy mmap & Async DMA Prefetch stream pages directly to VRAM (98% GPU Compute).")
+            self._guide_var.set("MODE 2 is idle. Click Next Step or run the benchmark to animate one valid data path.")
+            self._mode_desc_var.set("MODE 2: AI-SSD overlaps direct storage, prefetch, and accelerator compute.")
         else:
             self._tab_btn_norm.config(bg=BG2, fg=FG2)
             self._tab_btn_ai.config(bg=BG2, fg=FG2)
             self._tab_btn_comp.config(bg=NEON_PURPLE, fg="white")
-            self._active_nodes = {"ssd", "page", "ram", "pcie", "vram", "cpu", "prefetch", "loop", "checkpoint"}
             self._guide_var.set("MODE 3: Side-by-Side Comparison - Head-to-head benchmark metrics & latency visualizer.")
             self._mode_desc_var.set("MODE 3: Head-to-Head Comparison - Comparing Traditional vs AI-SSD performance.")
 
-        self._redraw_canvas()
+        if mode == "comparison":
+            self._topology_frame.pack_forget()
+        else:
+            self._topology_frame.pack(fill="x", padx=12, pady=6, before=self._design_frame)
+            self._redraw_canvas()
 
     # -----------------------------------------------------------------------
     # Hardware Topology Canvas with Bezier Curves & Mode Isolation
@@ -248,6 +257,7 @@ class App(tk.Tk):
     def _build_hardware_topology_panel(self, parent: tk.Widget) -> None:
         frame = tk.Frame(parent, bg=BG2, highlightbackground=BORDER, highlightthickness=1)
         frame.pack(fill="x", padx=12, pady=6)
+        self._topology_frame = frame
 
         hdr_frame = tk.Frame(frame, bg=BG2, pady=6, padx=12)
         hdr_frame.pack(fill="x")
@@ -282,6 +292,31 @@ class App(tk.Tk):
 
         self._start_packet_animation()
 
+    def _build_ai_ssd_design_panel(self, parent: tk.Widget) -> None:
+        """Make the architecture proposal explicit, not just implied by the animation."""
+        frame = tk.Frame(parent, bg=BG2, highlightbackground=BORDER, highlightthickness=1)
+        frame.pack(fill="x", padx=12, pady=6)
+        self._design_frame = frame
+        tk.Label(frame, text="AI-Era SSD Design: computational storage for training and inference",
+                 font=FONT_HEAD, fg=NEON_BLUE, bg=BG2).pack(anchor="w", padx=12, pady=(8, 2))
+        tk.Label(frame, text="Move bytes once, predict the next tensors, and keep the accelerator fed without turning the SSD into an opaque compute box.",
+                 font=FONT_BODY, fg=FG2, bg=BG2).pack(anchor="w", padx=12, pady=(0, 8))
+
+        cards = tk.Frame(frame, bg=BG2)
+        cards.pack(fill="x", padx=8, pady=(0, 10))
+        concepts = [
+            ("Firmware QoS", "Tensor-aware FTL groups sequential shards, reserves low-tail-latency queues, and writes checkpoints in the background."),
+            ("Adaptive Cache", "DRAM/SLC cache pins hot KV blocks and model metadata; a predictor prefetches only the next attention window."),
+            ("Near-Data Engine", "Optional controller cores decompress, checksum, and filter tensors before DMA, reducing PCIe bytes and accelerator wakeups."),
+            ("Direct Data Plane", "GPUDirect / CXL-ready DMA streams into VRAM with telemetry-driven throttling for lower copy cost, latency, and energy."),
+        ]
+        for index, (title, detail) in enumerate(concepts):
+            cards.columnconfigure(index, weight=1)
+            card = tk.Frame(cards, bg=BG3, highlightbackground="#293452", highlightthickness=1)
+            card.grid(row=0, column=index, sticky="nsew", padx=3)
+            tk.Label(card, text=title, font=("Segoe UI", 9, "bold"), fg=NEON_GRN, bg=BG3).pack(anchor="w", padx=8, pady=(7, 2))
+            tk.Label(card, text=detail, font=("Segoe UI", 8), fg=FG, bg=BG3, justify="left", wraplength=235).pack(anchor="w", padx=8, pady=(0, 7))
+
     # -----------------------------------------------------------------------
     # Canvas Drawing & Smooth Bezier Edge Rendering
     # -----------------------------------------------------------------------
@@ -297,32 +332,38 @@ class App(tk.Tk):
         # 1. Draw Subsystem Parent Boundaries
         if mode == "normal":
             c.create_rectangle(30, 40, 560, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
-            c.create_text(40, 52, text="HOST SYSTEM MOTHERBOARD (CPU, DDR5 RAM & OS PAGE CACHE)", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="w")
+            c.create_text(40, 52, text="DEDICATED CPU + DDR5 RAM + OS PAGE CACHE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="w")
             c.create_rectangle(600, 40, 740, 230, fill="#0f1322", outline="#252d47", width=1)
             c.create_text(670, 52, text="PCIe 5.0 BUS", font=("Segoe UI", 8, "bold"), fill="#4d5985", anchor="center")
             c.create_rectangle(780, 40, 1140, 320, fill="#13172b", outline="#2a365c", width=1, dash=(6, 4))
-            c.create_text(795, 52, text="GPU ACCELERATOR BOARD (CUDA MATRIX ENGINE & HBM3 VRAM)", font=("Segoe UI", 8, "bold"), fill=NEON_PURPLE, anchor="w")
+            c.create_text(795, 52, text="AI ACCELERATOR (MATRIX ENGINE + HBM3 VRAM)", font=("Segoe UI", 8, "bold"), fill=NEON_PURPLE, anchor="w")
 
         elif mode == "ai":
             c.create_rectangle(30, 40, 370, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
-            c.create_text(40, 52, text="HOST NVMe STORAGE & PREFETCH ENGINE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="w")
+            c.create_text(40, 52, text="AI NVMe SSD + COMPUTATIONAL DATA ENGINE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="w")
             c.create_rectangle(410, 40, 550, 230, fill="#0f1322", outline="#252d47", width=1)
             c.create_text(480, 52, text="GPUDirect (GDS) BUS", font=("Segoe UI", 8, "bold"), fill=NEON_BLUE, anchor="center")
             c.create_rectangle(590, 40, 1140, 320, fill="#13172b", outline="#2a365c", width=1, dash=(6, 4))
-            c.create_text(605, 52, text="GPU ACCELERATOR BOARD (DIRECT VRAM & CUDA ENGINE)", font=("Segoe UI", 8, "bold"), fill=NEON_PURPLE, anchor="w")
+            c.create_text(605, 52, text="AI ACCELERATOR (DIRECT VRAM + MATRIX ENGINE)", font=("Segoe UI", 8, "bold"), fill=NEON_PURPLE, anchor="w")
 
         else: # Mode 3: Comparison
             c.create_text(590, 25, text="SIDE-BY-SIDE HACKATHON COMPARISON TOPOLOGY", font=("Segoe UI", 10, "bold"), fill=NEON_PURPLE, anchor="center")
 
-        # 2. Draw Smooth Bezier Curved Connections
-        for i in range(len(nodes) - 1):
-            k1, t1, d1, x1, y1 = nodes[i]
-            k2, t2, d2, x2, y2 = nodes[i+1]
+        # 2. Draw only the defined physical data links.  A lit component alone
+        # never creates traffic on an unrelated link.
+        node_by_key = {node[0]: node for node in nodes}
+        if mode == "normal":
+            links = [("ssd", "page"), ("page", "ram"), ("ram", "pcie"),
+                     ("pcie", "vram"), ("vram", "cpu"), ("cpu", "loop")]
+        else:
+            links = [("ssd", "prefetch"), ("prefetch", "pcie"), ("pcie", "vram"),
+                     ("vram", "cpu"), ("cpu", "loop"), ("cpu", "checkpoint"),
+                     ("checkpoint", "ssd")]
+        for k1, k2 in links:
+            _, _, _, x1, y1 = node_by_key[k1]
+            _, _, _, x2, y2 = node_by_key[k2]
 
-            if k1 == "checkpoint" or k2 == "checkpoint":
-                continue
-
-            is_active = (k1 in self._active_nodes) and (k2 in self._active_nodes)
+            is_active = (k1, k2) in self._active_edges
             col = lane_color if is_active else "#22273d"
             lw = 3 if is_active else 1.5
 
@@ -334,15 +375,14 @@ class App(tk.Tk):
             self._draw_bezier_curve(c, (start_x, y1), (ctrl_x1, y1), (ctrl_x2, y2), (end_x, y2), fill=col, width=lw)
 
         # Autoregressive Loop Arc
-        if "loop" in self._active_nodes:
+        if ("cpu", "loop") in self._active_edges:
             cx, cy = (1050, 215) if mode == "normal" else (860, 215)
             c.create_arc(cx-35, cy-25, cx+35, cy+25, start=200, extent=240, style="arc", outline=lane_color, width=3)
             c.create_text(cx, cy+32, text="Forward / Backprop Pass", font=("Segoe UI", 7, "bold"), fill=lane_color)
 
         # Checkpoint Offload Arc (Mode 2)
-        if mode == "ai" and "checkpoint" in self._active_nodes:
-            self._draw_bezier_curve(c, (860, 270), (670, 310), (290, 310), (100, 270), fill=NEON_YLW, width=2.5)
-            c.create_text(480, 315, text="Async Checkpoint Offload -> SSD (0ms GPU Freeze)", font=("Segoe UI", 7, "bold"), fill=NEON_YLW)
+        if mode == "ai" and ("checkpoint", "ssd") in self._active_edges:
+            c.create_text(480, 315, text="Async Checkpoint Offload -> SSD (0ms accelerator freeze)", font=("Segoe UI", 7, "bold"), fill=NEON_YLW)
 
         # 3. Draw Nodes with Vector Icons
         for key, title, detail, cx, cy in nodes:
@@ -416,23 +456,28 @@ class App(tk.Tk):
         self._canvas.delete("packet")
 
         mode = self._current_mode
+        if mode == "comparison":
+            self._packets = []
+            self.after(35, self._animate_packets)
+            return
         nodes = self._nodes_mode1 if mode == "normal" else self._nodes_mode2
+        node_by_key = {node[0]: node for node in nodes}
+        active_links = list(self._active_edges)
 
-        if self._active_nodes:
+        if active_links and (self._running or self._active_nodes):
             if len(self._packets) < 4:
                 self._packets.append({
-                    "seg": 0, "prog": 0.0,
+                    "edge": active_links[len(self._packets) % len(active_links)], "prog": 0.0,
                     "speed": 0.09 if mode == "ai" else 0.04
                 })
 
         new_packets = []
         for p in self._packets:
-            seg = p["seg"]
             p["prog"] += p["speed"]
-
-            if seg < len(nodes) - 1:
-                k1, _, _, x1, y1 = nodes[seg]
-                k2, _, _, x2, y2 = nodes[seg+1]
+            k1, k2 = p["edge"]
+            if (k1, k2) in self._active_edges:
+                _, _, _, x1, y1 = node_by_key[k1]
+                _, _, _, x2, y2 = node_by_key[k2]
 
                 start_x, end_x = x1 + 55, x2 - 55
                 t = p["prog"]
@@ -448,10 +493,8 @@ class App(tk.Tk):
 
                 if p["prog"] >= 1.0:
                     p["prog"] = 0.0
-                    p["seg"] += 1
-
-                if p["seg"] < len(nodes) - 1:
-                    new_packets.append(p)
+                    p["edge"] = active_links[(active_links.index((k1, k2)) + 1) % len(active_links)]
+                new_packets.append(p)
 
         self._packets = new_packets
         self.after(35, self._animate_packets)
@@ -470,36 +513,40 @@ class App(tk.Tk):
 
     def _next_guide_step_mode1(self) -> None:
         steps = [
-            ("Step 1/4: Standard I/O Read Request", {"ssd", "page"},
+            ("Step 1/4: Standard I/O Read Request", {"ssd", "page"}, {("ssd", "page")},
              "Step 1/4 (Traditional): Application issues open()+read() -> Kernel allocates OS Page Cache buffer."),
-            ("Step 2/4: Kernel Double-Buffering Penalty", {"page", "ram"},
+            ("Step 2/4: Kernel Double-Buffering Penalty", {"page", "ram"}, {("page", "ram")},
              "Step 2/4 (Traditional): OS copies 4KB chunks from Page Cache into User-Space RAM (double copy overhead)."),
-            ("Step 3/4: PCIe Transit & Host Delay", {"ram", "pcie", "vram"},
+            ("Step 3/4: PCIe Transit & Dedicated-Memory Delay", {"ram", "pcie", "vram"}, {("ram", "pcie"), ("pcie", "vram")},
              "Step 3/4 (Traditional): Data copied over PCIe bus to GPU VRAM with high transfer latency."),
-            ("Step 4/4: GPU Idle Compute Stall", {"vram", "cpu", "loop"},
-             "Step 4/4 (Traditional): CUDA Tensor Cores halt execution waiting for blocking disk reads (14% utilization)."),
+            ("Step 4/4: Accelerator Compute Stall", {"vram", "cpu", "loop"}, {("vram", "cpu"), ("cpu", "loop")},
+             "Step 4/4 (Traditional): The AI accelerator waits for blocking disk reads (14% utilization)."),
         ]
         self._guide_step_mode1 = (self._guide_step_mode1 + 1) % len(steps)
-        title, active, explanation = steps[self._guide_step_mode1]
+        title, active, edges, explanation = steps[self._guide_step_mode1]
         self._active_nodes = active
+        self._active_edges = edges
+        self._packets = []
         self._guide_var.set(explanation)
         self._mode_desc_var.set(f"MODE 1 WALKTHROUGH: {title}")
         self._redraw_canvas()
 
     def _next_guide_step_mode2(self) -> None:
         steps = [
-            ("Step 1/4: Direct Zero-Copy mmap Mapping", {"ssd", "prefetch"},
+            ("Step 1/4: Direct Zero-Copy mmap Mapping", {"ssd", "prefetch"}, {("ssd", "prefetch")},
              "Step 1/4 (AI-SSD): Dataset mapped directly into virtual address space via mmap zero-copy."),
-            ("Step 2/4: Async DMA Prefetch & GDS Bypass", {"prefetch", "pcie", "vram"},
+            ("Step 2/4: Async DMA Prefetch & GDS Bypass", {"prefetch", "pcie", "vram"}, {("prefetch", "pcie"), ("pcie", "vram")},
              "Step 2/4 (AI-SSD): Background DMA prefetch engine streams upcoming pages over GPUDirect Storage."),
-            ("Step 3/4: Overlapped GPU Tensor Compute", {"vram", "cpu", "loop"},
+            ("Step 3/4: Overlapped Accelerator Compute", {"vram", "cpu", "loop"}, {("vram", "cpu"), ("cpu", "loop")},
              "Step 3/4 (AI-SSD): CUDA Tensor Cores compute at 98% utilization without waiting for disk reads."),
-            ("Step 4/4: Async Checkpoint Offload -> SSD", {"cpu", "loop", "checkpoint", "ssd"},
+            ("Step 4/4: Async Checkpoint Offload -> SSD", {"cpu", "loop", "checkpoint", "ssd"}, {("cpu", "checkpoint"), ("checkpoint", "ssd")},
              "Step 4/4 (AI-SSD): Checkpoint weights save to SSD asynchronously in the background (0ms GPU freeze)."),
         ]
         self._guide_step_mode2 = (self._guide_step_mode2 + 1) % len(steps)
-        title, active, explanation = steps[self._guide_step_mode2]
+        title, active, edges, explanation = steps[self._guide_step_mode2]
         self._active_nodes = active
+        self._active_edges = edges
+        self._packets = []
         self._guide_var.set(explanation)
         self._mode_desc_var.set(f"MODE 2 WALKTHROUGH: {title}")
         self._redraw_canvas()
@@ -515,7 +562,9 @@ class App(tk.Tk):
         ]
         self._guide_step_mode3 = (self._guide_step_mode3 + 1) % len(steps)
         title, active, explanation = steps[self._guide_step_mode3]
-        self._active_nodes = active
+        # Comparison intentionally has no topology canvas or active packet stream.
+        self._active_nodes = set()
+        self._active_edges = set()
         self._guide_var.set(explanation)
         self._mode_desc_var.set(f"COMPARISON DEMO: {title}")
         self._redraw_canvas()
@@ -645,6 +694,7 @@ class App(tk.Tk):
             loss = data["loss"]
             batch = data["batch"]
             active_nodes = set(data["active_nodes"])
+            active_edges = {tuple(edge) for edge in data.get("active_edges", [])}
 
             gpu_util = 14.2 if mode == "baseline" else 98.5
             self._batch_var.set(f"Batch: {batch}/{total} ({(batch/total)*100:.0f}%)")
@@ -656,18 +706,20 @@ class App(tk.Tk):
 
             if mode == "baseline":
                 if self._current_mode == "normal":
-                    active_nodes.add("loop")
                     if is_chkpt:
                         active_nodes.add("ssd")
                     self._active_nodes = active_nodes
+                    self._active_edges = active_edges
+                    self._packets = []
                     self._mode_desc_var.set(f"TRADITIONAL: Batch {batch}/{total} - CPU Stalled ({io_ms:.1f}ms PCIe wait)")
                     self._redraw_canvas()
             else:
                 if self._current_mode == "ai":
-                    active_nodes.add("loop")
                     if is_chkpt:
                         active_nodes.add("checkpoint")
                     self._active_nodes = active_nodes
+                    self._active_edges = active_edges
+                    self._packets = []
                     self._mode_desc_var.set(f"AI-SSD OPTIMISED: Batch {batch}/{total} - Continuous Compute (0ms PCIe stall)")
                     self._redraw_canvas()
 
@@ -696,6 +748,7 @@ class App(tk.Tk):
     def _build_dashboard_panels(self, parent: tk.Widget) -> None:
         row_frame = tk.Frame(parent, bg=BG)
         row_frame.pack(fill="both", expand=True, padx=12, pady=4)
+        self._dashboard_frame = row_frame
         row_frame.columnconfigure(0, weight=1)
         row_frame.columnconfigure(1, weight=1)
 
@@ -844,9 +897,9 @@ class App(tk.Tk):
             self._log_txt.delete("1.0", "end")
             self._log_txt.config(state="disabled")
 
-        self._guide_step_mode1 = 0
-        self._guide_step_mode2 = 0
-        self._guide_step_mode3 = 0
+        self._guide_step_mode1 = -1
+        self._guide_step_mode2 = -1
+        self._guide_step_mode3 = -1
         self._select_mode("ai")
         for row in self._tree.get_children():
             self._tree.delete(row)
