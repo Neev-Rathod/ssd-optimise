@@ -322,7 +322,7 @@ class HardwareCycleModel:
         link4_cycles = int(link4_total_sec * self.specs.gpu_freq_ghz * 1e9)
 
         # 4. GPU Accelerator Compute (Compute Component - Overlapped with DMA Prefetch!)
-        gpu_compute_base_cycles = int(2.2e9 * 0.1818 * compute_ratio * (size_bytes / (100 * 1024 * 1024)))
+        gpu_compute_base_cycles = int(2.2e9 * 1.0 * compute_ratio * (size_bytes / (100 * 1024 * 1024)))
         gpu_compute_sec = gpu_compute_base_cycles / (self.specs.gpu_freq_ghz * 1e9)
 
         io_raw_sec = (ssd_total_sec + link1_total_sec + engine_total_sec + link2_total_sec +

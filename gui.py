@@ -96,6 +96,9 @@ class App(tk.Tk):
         self._guide_step_mode3 = -1
         self._packets = []
         self._active_edges: Set[Tuple[str, str]] = set()
+        
+        self._last_hw_res = None
+        self._hover_item = None
 
         # Node coordinates per mode
         self._nodes_mode1 = [
@@ -271,6 +274,10 @@ class App(tk.Tk):
         self._canvas_h = 350
         self._canvas = tk.Canvas(frame, bg="#0d0f1a", height=self._canvas_h, highlightthickness=0)
         self._canvas.pack(fill="x", padx=10, pady=(0, 6))
+        self._canvas.bind("<Motion>", self._on_canvas_hover)
+        self._canvas.bind("<Leave>", self._on_canvas_leave)
+        self._tooltip_id = None
+        self._tooltip_bg_id = None
 
         self._train_bar = tk.Frame(frame, bg=BG3, highlightbackground=BORDER, highlightthickness=1, pady=6, padx=12)
         self._train_bar.pack(fill="x", padx=10, pady=(0, 8))
@@ -331,8 +338,15 @@ class App(tk.Tk):
 
         # 1. Draw Subsystem Parent Boundaries
         if mode == "normal":
-            c.create_rectangle(30, 40, 560, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
-            c.create_text(40, 52, text="DEDICATED CPU + DDR5 RAM + OS PAGE CACHE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="w")
+            c.create_rectangle(30, 40, 170, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
+            c.create_text(100, 52, text="SSD STORAGE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="center")
+            
+            c.create_rectangle(220, 40, 360, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
+            c.create_text(290, 52, text="HOST CPU/KERNEL", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="center")
+            
+            c.create_rectangle(410, 40, 550, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
+            c.create_text(480, 52, text="DEDICATED RAM", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="center")
+            
             c.create_rectangle(600, 40, 740, 230, fill="#0f1322", outline="#252d47", width=1)
             c.create_text(670, 52, text="PCIe 5.0 BUS", font=("Segoe UI", 8, "bold"), fill="#4d5985", anchor="center")
             c.create_rectangle(780, 40, 1140, 320, fill="#13172b", outline="#2a365c", width=1, dash=(6, 4))
@@ -372,7 +386,7 @@ class App(tk.Tk):
             ctrl_x1 = start_x + (end_x - start_x) * 0.5
             ctrl_x2 = start_x + (end_x - start_x) * 0.5
 
-            self._draw_bezier_curve(c, (start_x, y1), (ctrl_x1, y1), (ctrl_x2, y2), (end_x, y2), fill=col, width=lw)
+            self._draw_bezier_curve(c, (start_x, y1), (ctrl_x1, y1), (ctrl_x2, y2), (end_x, y2), fill=col, width=lw, tags=("edge", f"edge_{k1}_{k2}"))
 
         # Autoregressive Loop Arc
         if ("cpu", "loop") in self._active_edges:
@@ -396,7 +410,7 @@ class App(tk.Tk):
             x1, y1 = cx - w//2, cy - h//2
             x2, y2 = cx + w//2, cy + h//2
 
-            c.create_rectangle(x1, y1, x2, y2, fill=bg_col, outline=border_col, width=2 if is_active else 1)
+            c.create_rectangle(x1, y1, x2, y2, fill=bg_col, outline=border_col, width=2 if is_active else 1, tags=("node", f"node_{key}"))
 
             if is_active:
                 c.create_rectangle(x1, y1, x1+5, y2, fill=border_col, outline="")
@@ -417,7 +431,54 @@ class App(tk.Tk):
             y = (1-t)**3 * p0[1] + 3*(1-t)**2 * t * p1[1] + 3*(1-t) * t**2 * p2[1] + t**3 * p3[1]
             points.extend([x, y])
 
-        c.create_line(*points, fill=fill, width=width, smooth=True)
+        c.create_line(*points, fill=fill, width=width, smooth=True, tags=kwargs.get("tags", ""))
+
+    def _on_canvas_hover(self, event: tk.Event) -> None:
+        x, y = event.x, event.y
+        item = self._canvas.find_withtag("current")
+        if not item:
+            self._on_canvas_leave(event)
+            return
+
+        tags = self._canvas.gettags(item[0])
+        hw = self._last_hw_res
+
+        tooltip_text = ""
+        for tag in tags:
+            if tag.startswith("node_") and hw:
+                key = tag[5:]
+                if key in hw.get("components", {}):
+                    comp = hw["components"][key]
+                    tooltip_text = f"Node: {key.upper()}\nTime to compute: {comp['ms']:.3f} ms\nCycles: {comp['cycles']:,}"
+            elif tag.startswith("edge_") and hw:
+                parts = tag.split("_")
+                if len(parts) == 3:
+                    k1, k2 = parts[1], parts[2]
+                    ekey = f"{k1}->{k2}"
+                    if ekey in hw.get("edges", {}):
+                        edge = hw["edges"][ekey]
+                        tooltip_text = f"Edge: {k1.upper()} -> {k2.upper()}\nTransfer time: {edge['ms']:.3f} ms\nCycles: {edge['cycles']:,}"
+
+        if tooltip_text:
+            if self._hover_item != tags[0]:
+                self._on_canvas_leave(event)
+                self._hover_item = tags[0]
+                self._tooltip_bg_id = self._canvas.create_rectangle(x+10, y+10, x+150, y+60, fill="#1a1d2e", outline=NEON_BLUE)
+                self._tooltip_id = self._canvas.create_text(x+15, y+15, text=tooltip_text, font=("Segoe UI", 8), fill="white", anchor="nw")
+                bbox = self._canvas.bbox(self._tooltip_id)
+                if bbox:
+                    self._canvas.coords(self._tooltip_bg_id, bbox[0]-5, bbox[1]-5, bbox[2]+5, bbox[3]+5)
+        else:
+            self._on_canvas_leave(event)
+
+    def _on_canvas_leave(self, event: tk.Event) -> None:
+        if self._tooltip_id:
+            self._canvas.delete(self._tooltip_id)
+            self._tooltip_id = None
+        if self._tooltip_bg_id:
+            self._canvas.delete(self._tooltip_bg_id)
+            self._tooltip_bg_id = None
+        self._hover_item = None
 
     def _draw_vector_icon(self, c: tk.Canvas, key: str, x: int, y: int, color: str) -> None:
         if key == "ssd":
@@ -693,6 +754,7 @@ class App(tk.Tk):
             comp_ms = data["compute_ms"]
             loss = data["loss"]
             batch = data["batch"]
+            self._last_hw_res = data.get("hw_breakdown")
             active_nodes = set(data["active_nodes"])
             active_edges = {tuple(edge) for edge in data.get("active_edges", [])}
 
