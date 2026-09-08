@@ -126,9 +126,9 @@ The five fullscreen steps are:
 
 1. Request the next batch and perform predictive lookahead.
 2. Prepare tensor data near storage, such as decompression, validation, decode,
-  resize, or normalization when supported by the deployment.
+   resize, or normalization when supported by the deployment.
 3. Transfer the prepared batch directly into GPU VRAM through the GPUDirect-style
-  DMA path.
+   DMA path.
 4. Run GPU-side preprocessing and model computation.
 5. Offload checkpoint writes asynchronously while the next batch is prepared.
 
@@ -161,16 +161,16 @@ The following scores were produced by running `python emulator.py` on the defaul
 100 MB dataset with 20 KV-cache inference steps. Runtime values can change with
 filesystem cache state and machine load.
 
-| Runtime metric | Traditional I/O | AI-SSD emulated | Improvement |
-| --- | ---: | ---: | ---: |
-| Dataset load latency | 46.7 ms | 33.6 ms | 1.4x faster |
-| Read throughput | 2,140 MB/s | 2,975 MB/s | 1.4x higher |
-| Dataset-load RAM delta | 110.6 MB | 100.5 MB | 9.1% lower |
-| KV-cache average step | 2.40 ms | 1.70 ms | 1.4x faster |
-| KV-cache hit rate | 0.0% | 95.0% | Optimized cache active |
-| KV-cache peak RAM | 218.8 MB | 218.9 MB | Approximately unchanged |
-| Total benchmark time | 0.095 s | 0.068 s | 28.6% less I/O time |
-| Estimated total with compute | 2.095 s | 2.012 s | 4.0% lower |
+| Runtime metric               | Traditional I/O | AI-SSD emulated |             Improvement |
+| ---------------------------- | --------------: | --------------: | ----------------------: |
+| Dataset load latency         |         46.7 ms |         33.6 ms |             1.4x faster |
+| Read throughput              |      2,140 MB/s |      2,975 MB/s |             1.4x higher |
+| Dataset-load RAM delta       |        110.6 MB |        100.5 MB |              9.1% lower |
+| KV-cache average step        |         2.40 ms |         1.70 ms |             1.4x faster |
+| KV-cache hit rate            |            0.0% |           95.0% |  Optimized cache active |
+| KV-cache peak RAM            |        218.8 MB |        218.9 MB | Approximately unchanged |
+| Total benchmark time         |         0.095 s |         0.068 s |     28.6% less I/O time |
+| Estimated total with compute |         2.095 s |         2.012 s |              4.0% lower |
 
 ### Cycle-model component scores
 
@@ -178,23 +178,23 @@ These timings come from the emulator's cycle-accurate hardware model for the sam
 100 MB payload. They explain the stages shown in the GUI; they are not measurements
 of a physical computational-storage SSD, NVMe controller, or GPU.
 
-| Traditional component | Modeled time |
-| --- | ---: |
-| NVMe SSD controller + flash read | 15.472 ms |
-| OS page-cache allocation/double copy | 3.281 ms |
-| Host CPU syscall and IRQ queue | 0.005 ms |
-| DDR5 RAM access | 1.638 ms |
+| Traditional component                      |                  Modeled time |
+| ------------------------------------------ | ----------------------------: |
+| NVMe SSD controller + flash read           |                     15.472 ms |
+| OS page-cache allocation/double copy       |                      3.281 ms |
+| Host CPU syscall and IRQ queue             |                      0.005 ms |
+| DDR5 RAM access                            |                      1.638 ms |
 | PCIe/host-to-device and VRAM transfer path | 7.490 ms link + 0.105 ms VRAM |
-| GPU tensor compute | 1,000.000 ms |
+| GPU tensor compute                         |                  1,000.000 ms |
 
-| AI-SSD component | Modeled time |
-| --- | ---: |
-| NVMe storage + predictive SLC cache | 7.506 ms |
-| SSD data engine: decompress/checksum/filter block | 0.001 ms |
-| Data-engine to GPUDirect DMA path | 7.490 ms |
-| Direct PCIe write into GPU VRAM | 7.490 ms |
-| Direct GPU HBM3 VRAM access | 0.105 ms |
-| GPU tensor compute overlapped with data movement | 1,000.000 ms |
+| AI-SSD component                                  | Modeled time |
+| ------------------------------------------------- | -----------: |
+| NVMe storage + predictive SLC cache               |     7.506 ms |
+| SSD data engine: decompress/checksum/filter block |     0.001 ms |
+| Data-engine to GPUDirect DMA path                 |     7.490 ms |
+| Direct PCIe write into GPU VRAM                   |     7.490 ms |
+| Direct GPU HBM3 VRAM access                       |     0.105 ms |
+| GPU tensor compute overlapped with data movement  | 1,000.000 ms |
 
 The traditional path additionally models these links: SSD-to-page-cache 15.420 ms,
 page-cache-to-RAM 1.639 ms, RAM-to-PCIe 1.639 ms, PCIe-to-VRAM 7.490 ms, and
