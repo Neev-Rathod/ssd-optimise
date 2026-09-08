@@ -99,6 +99,9 @@ class App(tk.Tk):
         
         self._last_hw_res = None
         self._hover_item = None
+        self._fullscreen_window: Optional[tk.Toplevel] = None
+        self._topology_canvas = None
+        self._transition_id = 0
 
         # Node coordinates per mode
         self._nodes_mode1 = [
@@ -267,6 +270,13 @@ class App(tk.Tk):
 
         tk.Label(hdr_frame, text="AI Hardware System Architecture & Training Topology", font=FONT_HEAD, fg=FG, bg=BG2).pack(side="left")
 
+        tk.Button(
+            hdr_frame, text="Full Screen", font=("Segoe UI", 9, "bold"),
+            fg=FG, bg=BG3, activebackground=NEON_BLUE, activeforeground="black",
+            relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+            command=self._open_topology_fullscreen
+        ).pack(side="right", padx=(8, 0))
+
         self._guide_var = tk.StringVar(value="Click 'Next Step' to walk through the active mode.")
         tk.Label(hdr_frame, textvariable=self._guide_var, font=FONT_BODY, fg=NEON_GRN, bg=BG2).pack(side="right")
 
@@ -274,6 +284,7 @@ class App(tk.Tk):
         self._canvas_h = 350
         self._canvas = tk.Canvas(frame, bg="#0d0f1a", height=self._canvas_h, highlightthickness=0)
         self._canvas.pack(fill="x", padx=10, pady=(0, 6))
+        self._topology_canvas = self._canvas
         self._canvas.bind("<Motion>", self._on_canvas_hover)
         self._canvas.bind("<Leave>", self._on_canvas_leave)
         self._tooltip_id = None
@@ -335,30 +346,44 @@ class App(tk.Tk):
         mode = self._current_mode
         nodes = self._nodes_mode1 if mode == "normal" else (self._nodes_mode2 if mode == "ai" else self._nodes_mode2)
         lane_color = NEON_RED if mode == "normal" else NEON_BLUE
+        guide_step = self._guide_step_for_mode()
+        show_activity = guide_step >= 0 or self._running
+
+        if not show_activity:
+            return
+        visible_nodes = self._visible_nodes_for_frame(mode, guide_step)
 
         # 1. Draw Subsystem Parent Boundaries
         if mode == "normal":
-            c.create_rectangle(30, 40, 170, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
-            c.create_text(100, 52, text="SSD STORAGE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="center")
+            if "ssd" in visible_nodes:
+                c.create_rectangle(30, 40, 170, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
+                c.create_text(100, 52, text="SSD STORAGE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="center")
             
-            c.create_rectangle(220, 40, 360, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
-            c.create_text(290, 52, text="HOST CPU/KERNEL", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="center")
+            if "page" in visible_nodes:
+                c.create_rectangle(220, 40, 360, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
+                c.create_text(290, 52, text="HOST CPU/KERNEL", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="center")
             
-            c.create_rectangle(410, 40, 550, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
-            c.create_text(480, 52, text="DEDICATED RAM", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="center")
+            if "ram" in visible_nodes:
+                c.create_rectangle(410, 40, 550, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
+                c.create_text(480, 52, text="DEDICATED RAM", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="center")
             
-            c.create_rectangle(600, 40, 740, 230, fill="#0f1322", outline="#252d47", width=1)
-            c.create_text(670, 52, text="PCIe 5.0 BUS", font=("Segoe UI", 8, "bold"), fill="#4d5985", anchor="center")
-            c.create_rectangle(780, 40, 1140, 320, fill="#13172b", outline="#2a365c", width=1, dash=(6, 4))
-            c.create_text(795, 52, text="AI ACCELERATOR (MATRIX ENGINE + HBM3 VRAM)", font=("Segoe UI", 8, "bold"), fill=NEON_PURPLE, anchor="w")
+            if "pcie" in visible_nodes:
+                c.create_rectangle(600, 40, 740, 230, fill="#0f1322", outline="#252d47", width=1)
+                c.create_text(670, 52, text="PCIe 5.0 BUS", font=("Segoe UI", 8, "bold"), fill="#4d5985", anchor="center")
+            if visible_nodes.intersection({"vram", "cpu", "loop"}):
+                c.create_rectangle(780, 40, 1140, 320, fill="#13172b", outline="#2a365c", width=1, dash=(6, 4))
+                c.create_text(795, 52, text="AI ACCELERATOR (MATRIX ENGINE + HBM3 VRAM)", font=("Segoe UI", 8, "bold"), fill=NEON_PURPLE, anchor="w")
 
         elif mode == "ai":
-            c.create_rectangle(30, 40, 370, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
-            c.create_text(40, 52, text="AI NVMe SSD + COMPUTATIONAL DATA ENGINE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="w")
-            c.create_rectangle(410, 40, 550, 230, fill="#0f1322", outline="#252d47", width=1)
-            c.create_text(480, 52, text="GPUDirect (GDS) BUS", font=("Segoe UI", 8, "bold"), fill=NEON_BLUE, anchor="center")
-            c.create_rectangle(590, 40, 1140, 320, fill="#13172b", outline="#2a365c", width=1, dash=(6, 4))
-            c.create_text(605, 52, text="AI ACCELERATOR (DIRECT VRAM + MATRIX ENGINE)", font=("Segoe UI", 8, "bold"), fill=NEON_PURPLE, anchor="w")
+            if visible_nodes.intersection({"ssd", "prefetch"}):
+                c.create_rectangle(30, 40, 370, 230, fill="#121524", outline="#2c3452", width=1, dash=(4, 4))
+                c.create_text(40, 52, text="AI NVMe SSD + COMPUTATIONAL DATA ENGINE", font=("Segoe UI", 8, "bold"), fill="#606c96", anchor="w")
+            if "pcie" in visible_nodes:
+                c.create_rectangle(410, 40, 550, 230, fill="#0f1322", outline="#252d47", width=1)
+                c.create_text(480, 52, text="GPUDirect (GDS) BUS", font=("Segoe UI", 8, "bold"), fill=NEON_BLUE, anchor="center")
+            if visible_nodes.intersection({"vram", "cpu", "loop"}):
+                c.create_rectangle(590, 40, 1140, 320, fill="#13172b", outline="#2a365c", width=1, dash=(6, 4))
+                c.create_text(605, 52, text="AI ACCELERATOR (DIRECT VRAM + MATRIX ENGINE)", font=("Segoe UI", 8, "bold"), fill=NEON_PURPLE, anchor="w")
 
         else: # Mode 3: Comparison
             c.create_text(590, 25, text="SIDE-BY-SIDE HACKATHON COMPARISON TOPOLOGY", font=("Segoe UI", 10, "bold"), fill=NEON_PURPLE, anchor="center")
@@ -373,7 +398,27 @@ class App(tk.Tk):
             links = [("ssd", "prefetch"), ("prefetch", "pcie"), ("pcie", "vram"),
                      ("vram", "cpu"), ("cpu", "loop"), ("cpu", "checkpoint"),
                      ("checkpoint", "ssd")]
+        visible_edges = set(self._active_edges)
+        if not self._running and guide_step >= 0:
+            if mode == "normal":
+                walkthrough = [
+                    ({"ssd", "page"}, {("ssd", "page")}),
+                    ({"page", "ram"}, {("page", "ram")}),
+                    ({"ram", "pcie", "vram"}, {("ram", "pcie"), ("pcie", "vram")}),
+                    ({"vram", "cpu", "loop"}, {("vram", "cpu"), ("cpu", "loop")}),
+                ]
+            else:
+                walkthrough = [
+                    ({"ssd", "prefetch"}, {("ssd", "prefetch")}),
+                    ({"prefetch", "pcie", "vram"}, {("prefetch", "pcie"), ("pcie", "vram")}),
+                    ({"vram", "cpu", "loop"}, {("vram", "cpu"), ("cpu", "loop")}),
+                    ({"cpu", "loop", "checkpoint", "ssd"}, {("cpu", "checkpoint"), ("checkpoint", "ssd")}),
+                ]
+            visible_edges = set().union(*(item[1] for item in walkthrough[:guide_step + 1]))
+
         for k1, k2 in links:
+            if (k1, k2) not in visible_edges:
+                continue
             _, _, _, x1, y1 = node_by_key[k1]
             _, _, _, x2, y2 = node_by_key[k2]
 
@@ -389,17 +434,21 @@ class App(tk.Tk):
             self._draw_bezier_curve(c, (start_x, y1), (ctrl_x1, y1), (ctrl_x2, y2), (end_x, y2), fill=col, width=lw, tags=("edge", f"edge_{k1}_{k2}"))
 
         # Autoregressive Loop Arc
-        if ("cpu", "loop") in self._active_edges:
+        if ("cpu", "loop") in visible_edges:
             cx, cy = (1050, 215) if mode == "normal" else (860, 215)
-            c.create_arc(cx-35, cy-25, cx+35, cy+25, start=200, extent=240, style="arc", outline=lane_color, width=3)
-            c.create_text(cx, cy+32, text="Forward / Backprop Pass", font=("Segoe UI", 7, "bold"), fill=lane_color)
+            arc_color = lane_color if ("cpu", "loop") in self._active_edges else "#455078"
+            c.create_arc(cx-35, cy-25, cx+35, cy+25, start=200, extent=240, style="arc", outline=arc_color, width=3)
+            c.create_text(cx, cy+32, text="Forward / Backprop Pass", font=("Segoe UI", 7, "bold"), fill=arc_color)
 
         # Checkpoint Offload Arc (Mode 2)
-        if mode == "ai" and ("checkpoint", "ssd") in self._active_edges:
-            c.create_text(480, 315, text="Async Checkpoint Offload -> SSD (0ms accelerator freeze)", font=("Segoe UI", 7, "bold"), fill=NEON_YLW)
+        if mode == "ai" and ("checkpoint", "ssd") in visible_edges:
+            checkpoint_color = NEON_YLW if ("checkpoint", "ssd") in self._active_edges else "#756c45"
+            c.create_text(480, 315, text="Async Checkpoint Offload -> SSD (0ms accelerator freeze)", font=("Segoe UI", 7, "bold"), fill=checkpoint_color)
 
         # 3. Draw Nodes with Vector Icons
         for key, title, detail, cx, cy in nodes:
+            if key not in visible_nodes:
+                continue
             is_active = key in self._active_nodes
             border_col = lane_color if is_active else "#28304c"
             bg_col = "#1d233d" if is_active else "#141726"
@@ -410,7 +459,10 @@ class App(tk.Tk):
             x1, y1 = cx - w//2, cy - h//2
             x2, y2 = cx + w//2, cy + h//2
 
-            c.create_rectangle(x1, y1, x2, y2, fill=bg_col, outline=border_col, width=2 if is_active else 1, tags=("node", f"node_{key}"))
+            node_tags = ["node", f"node_{key}"]
+            if is_active:
+                node_tags.append("current_step_node")
+            c.create_rectangle(x1, y1, x2, y2, fill=bg_col, outline=border_col, width=2 if is_active else 1, tags=tuple(node_tags))
 
             if is_active:
                 c.create_rectangle(x1, y1, x1+5, y2, fill=border_col, outline="")
@@ -419,6 +471,102 @@ class App(tk.Tk):
 
             c.create_text(cx + 6, cy - 7, text=title, font=("Segoe UI", 7, "bold"), fill=title_col, anchor="center")
             c.create_text(cx + 6, cy + 9, text=detail, font=("Segoe UI", 6), fill=detail_col, anchor="center")
+
+        if self._active_nodes:
+            self._animate_step_reveal()
+
+    def _visible_nodes_for_frame(self, mode: str, guide_step: int) -> Set[str]:
+        if self._running or guide_step < 0:
+            return set(self._active_nodes)
+        if mode == "normal":
+            walkthrough = [
+                {"ssd", "page"}, {"page", "ram"},
+                {"ram", "pcie", "vram"}, {"vram", "cpu", "loop"},
+            ]
+        else:
+            walkthrough = [
+                {"ssd", "prefetch"}, {"prefetch", "pcie", "vram"},
+                {"vram", "cpu", "loop"}, {"cpu", "loop", "checkpoint", "ssd"},
+            ]
+        return set().union(*walkthrough[:guide_step + 1])
+
+    def _guide_step_for_mode(self) -> int:
+        if self._current_mode == "normal":
+            return self._guide_step_mode1
+        if self._current_mode == "ai":
+            return self._guide_step_mode2
+        return self._guide_step_mode3
+
+    def _animate_step_reveal(self) -> None:
+        """Pulse the current step so the new activity is easy to follow."""
+        self._transition_id += 1
+        transition_id = self._transition_id
+        self._animate_step_frame(transition_id, 0)
+
+    def _animate_step_frame(self, transition_id: int, frame: int) -> None:
+        if transition_id != self._transition_id or not self._canvas.winfo_exists():
+            return
+        self._canvas.itemconfigure("current_step_node", width=3 if frame % 2 == 0 else 2)
+        if frame < 7:
+            self.after(65, lambda: self._animate_step_frame(transition_id, frame + 1))
+
+    def _open_topology_fullscreen(self) -> None:
+        if self._fullscreen_window is not None:
+            self._close_topology_fullscreen()
+            return
+
+        window = tk.Toplevel(self)
+        self._fullscreen_window = window
+        window.title("AI Hardware Topology")
+        window.configure(bg=BG)
+        window.attributes("-fullscreen", True)
+        window.bind("<Escape>", lambda _event: self._close_topology_fullscreen())
+        window.bind("<Left>", lambda _event: self._next_guide_step())
+        window.bind("<Right>", lambda _event: self._next_guide_step())
+
+        toolbar = tk.Frame(window, bg=BG2, padx=16, pady=10)
+        toolbar.pack(fill="x")
+        tk.Label(toolbar, text="AI Hardware System Architecture", font=FONT_TITLE, fg=NEON_BLUE, bg=BG2).pack(side="left")
+        tk.Button(
+            toolbar, text="<", font=("Segoe UI", 16, "bold"), width=3,
+            fg=FG, bg=BG3, activebackground=NEON_PURPLE, activeforeground="white",
+            relief="flat", bd=0, cursor="hand2", command=self._next_guide_step,
+        ).pack(side="right", padx=4)
+        tk.Button(
+            toolbar, text="Next Step", font=("Segoe UI", 9, "bold"),
+            fg=FG, bg=BG3, activebackground=NEON_PURPLE, activeforeground="white",
+            relief="flat", bd=0, padx=10, pady=5, cursor="hand2", command=self._next_guide_step,
+        ).pack(side="right", padx=4)
+        tk.Button(
+            toolbar, text=">", font=("Segoe UI", 16, "bold"), width=3,
+            fg=FG, bg=BG3, activebackground=NEON_PURPLE, activeforeground="white",
+            relief="flat", bd=0, cursor="hand2", command=self._next_guide_step,
+        ).pack(side="right", padx=4)
+        tk.Button(
+            toolbar, text="Exit", font=("Segoe UI", 9, "bold"),
+            fg=FG, bg=BG3, activebackground=NEON_RED, activeforeground="white",
+            relief="flat", bd=0, padx=12, pady=5, cursor="hand2",
+            command=self._close_topology_fullscreen,
+        ).pack(side="right", padx=(12, 0))
+
+        self._canvas.pack_forget()
+        self._canvas = tk.Canvas(window, bg="#0d0f1a", highlightthickness=0)
+        self._canvas.pack(fill="both", expand=True, padx=16, pady=16)
+        self._canvas.bind("<Motion>", self._on_canvas_hover)
+        self._canvas.bind("<Leave>", self._on_canvas_leave)
+        self._redraw_canvas()
+
+    def _close_topology_fullscreen(self) -> None:
+        if self._fullscreen_window is None:
+            return
+        self._on_canvas_leave(None)
+        self._canvas.destroy()
+        self._canvas = self._topology_canvas
+        self._canvas.pack(fill="x", padx=10, pady=(0, 6))
+        window = self._fullscreen_window
+        self._fullscreen_window = None
+        window.destroy()
+        self._redraw_canvas()
 
     def _draw_bezier_curve(self, c: tk.Canvas, p0: Tuple[int, int], p1: Tuple[int, int],
                            p2: Tuple[int, int], p3: Tuple[int, int], fill: str, width: float,
