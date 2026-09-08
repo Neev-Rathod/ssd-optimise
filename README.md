@@ -74,7 +74,7 @@ The GUI includes:
 - Activity indicators for the application, CPU, RAM, OS page cache, SSD, and prefetch engine.
 - A `Next Step` button for walking through the data flow manually.
 - A **Full Screen** topology view for presentations and architecture walkthroughs.
-- Fullscreen `<`, `>`, and `Next Step` controls; the left and right arrow keys also advance the walkthrough, and `Esc` exits fullscreen.
+- Fullscreen **Previous Step** and **Next Step** controls; the keyboard `Left` and `Right` arrow keys always advance the walkthrough, and `Esc` exits fullscreen.
 - Progressive topology rendering: the initial canvas is empty, future components remain hidden, and components from earlier steps stay visible but dimmed.
 - Animated current-step highlights and moving data packets along active links.
 - A scrollable dashboard with live logs, charts, and a results table.
@@ -102,6 +102,14 @@ the OS page cache, page-cache copy into host RAM, host-to-device PCIe transfer a
 GPU compute, then a checkpoint write back to the SSD. GPU-side decode, resize, or
 normalization can happen only after the batch reaches VRAM.
 
+The five fullscreen steps are:
+
+1. Application read request.
+2. SSD read into the OS page cache.
+3. Page-cache copy into host RAM.
+4. Host RAM to GPU VRAM transfer, followed by GPU preprocessing and compute.
+5. Checkpoint write from the training path back to the SSD.
+
 ### Mode 2: AI-SSD pipeline
 
 The walkthrough follows the optimised path:
@@ -113,6 +121,16 @@ represents mmap-based access, predictive prefetching, optional near-storage
 decompression/validation/decode/resize/normalization, zero-copy views, direct DMA,
 and overlapped compute. Image resizing and augmentation are described as proposed
 pipeline stages; this emulator does not manipulate real image tensors.
+
+The five fullscreen steps are:
+
+1. Request the next batch and perform predictive lookahead.
+2. Prepare tensor data near storage, such as decompression, validation, decode,
+  resize, or normalization when supported by the deployment.
+3. Transfer the prepared batch directly into GPU VRAM through the GPUDirect-style
+  DMA path.
+4. Run GPU-side preprocessing and model computation.
+5. Offload checkpoint writes asynchronously while the next batch is prepared.
 
 ### What the SSD data engine does
 
@@ -137,23 +155,56 @@ hints, zero-copy views, and background prefetching. GPU-side preprocessing is a
 separate stage that occurs after data reaches VRAM. It does not modify an SSD
 firmware controller, resize real images, or provide real GPUDirect hardware access.
 
-## Modeled improvement
+## Current benchmark results
 
-The GUI comparison walkthrough uses the following representative hardware-model
-values:
+The following scores were produced by running `python emulator.py` on the default
+100 MB dataset with 20 KV-cache inference steps. Runtime values can change with
+filesystem cache state and machine load.
 
-| Metric                    | Traditional path | AI-SSD path | Modeled improvement |
-| ------------------------- | ---------------: | ----------: | ------------------: |
-| KV/inference step latency |         197.5 ms |     13.2 ms |        14.9x faster |
-| Read throughput           |         382 MB/s |  2,736 MB/s |         7.2x higher |
+| Runtime metric | Traditional I/O | AI-SSD emulated | Improvement |
+| --- | ---: | ---: | ---: |
+| Dataset load latency | 46.7 ms | 33.6 ms | 1.4x faster |
+| Read throughput | 2,140 MB/s | 2,975 MB/s | 1.4x higher |
+| Dataset-load RAM delta | 110.6 MB | 100.5 MB | 9.1% lower |
+| KV-cache average step | 2.40 ms | 1.70 ms | 1.4x faster |
+| KV-cache hit rate | 0.0% | 95.0% | Optimized cache active |
+| KV-cache peak RAM | 218.8 MB | 218.9 MB | Approximately unchanged |
+| Total benchmark time | 0.095 s | 0.068 s | 28.6% less I/O time |
+| Estimated total with compute | 2.095 s | 2.012 s | 4.0% lower |
 
-These values describe the emulator's modeled scenario and can differ from the
-runtime numbers shown after a local benchmark. The actual result depends on the
-machine, filesystem cache state, dataset size, and installed dependencies. The
-important design effect is the same: reduce host-side copies and blocking I/O,
-then overlap prefetch, data movement, compute, and checkpoint writes. GPU
-utilization is intentionally omitted because this emulator does not measure it
-reliably.
+### Cycle-model component scores
+
+These timings come from the emulator's cycle-accurate hardware model for the same
+100 MB payload. They explain the stages shown in the GUI; they are not measurements
+of a physical computational-storage SSD, NVMe controller, or GPU.
+
+| Traditional component | Modeled time |
+| --- | ---: |
+| NVMe SSD controller + flash read | 15.472 ms |
+| OS page-cache allocation/double copy | 3.281 ms |
+| Host CPU syscall and IRQ queue | 0.005 ms |
+| DDR5 RAM access | 1.638 ms |
+| PCIe/host-to-device and VRAM transfer path | 7.490 ms link + 0.105 ms VRAM |
+| GPU tensor compute | 1,000.000 ms |
+
+| AI-SSD component | Modeled time |
+| --- | ---: |
+| NVMe storage + predictive SLC cache | 7.506 ms |
+| SSD data engine: decompress/checksum/filter block | 0.001 ms |
+| Data-engine to GPUDirect DMA path | 7.490 ms |
+| Direct PCIe write into GPU VRAM | 7.490 ms |
+| Direct GPU HBM3 VRAM access | 0.105 ms |
+| GPU tensor compute overlapped with data movement | 1,000.000 ms |
+
+The traditional path additionally models these links: SSD-to-page-cache 15.420 ms,
+page-cache-to-RAM 1.639 ms, RAM-to-PCIe 1.639 ms, PCIe-to-VRAM 7.490 ms, and
+VRAM-to-GPU 0.031 ms. The AI-SSD path models SSD-to-data-engine 7.491 ms,
+data-engine-to-PCIe 7.490 ms, PCIe-to-VRAM 7.490 ms, and VRAM-to-GPU 0.031 ms.
+
+The important design effect is to reduce host-side copies and blocking I/O, then
+overlap prefetch, tensor preparation, data movement, GPU work, and checkpoint
+writes. GPU utilization percentages are intentionally omitted because this
+emulator does not measure them reliably.
 
 ## Project Outputs
 
